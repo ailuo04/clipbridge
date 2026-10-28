@@ -1,37 +1,23 @@
 # 互传
 
-#### 介绍
-互传 Windows / Android 自动更新安装包与签名清单
+这是 ClipBridge / 互传的公开更新发布仓库。
 
-#### 软件架构
-软件架构说明
+客户端会自动读取本仓库的 `latest.json`，验证签名和安装包哈希后再更新。不要在客户端中加入 Gitee 访问令牌。
 
+发布新版本时，在源码目录运行：
 
-#### 安装教程
+```powershell
+.\tools\Publish-Release.ps1 -Version 0.3.0 -Notes '本次更新说明' -AndroidApkPath 'android\app\build\outputs\apk\release\app-release.apk'
+```
 
-1.  xxxx
-2.  xxxx
-3.  xxxx
+Windows ZIP 和 Android APK 直接放在仓库根目录，文件名包含版本号，并由 `latest.json` 中的签名清单指向。
 
-#### 使用说明
+首次推送时，将当前目录作为独立仓库：
 
-1.  xxxx
-2.  xxxx
-3.  xxxx
-
-#### 参与贡献
-
-1.  Fork 本仓库
-2.  新建 Feat_xxx 分支
-3.  提交代码
-4.  新建 Pull Request
-
-
-#### 特技
-
-1.  使用 Readme\_XXX.md 来支持不同的语言，例如 Readme\_en.md, Readme\_zh.md
-2.  Gitee 官方博客 [blog.gitee.com](https://blog.gitee.com)
-3.  你可以 [https://gitee.com/explore](https://gitee.com/explore) 这个地址来了解 Gitee 上的优秀开源项目
-4.  [GVP](https://gitee.com/gvp) 全称是 Gitee 最有价值开源项目，是综合评定出的优秀开源项目
-5.  Gitee 官方提供的使用手册 [https://gitee.com/help](https://gitee.com/help)
-6.  Gitee 封面人物是一档用来展示 Gitee 会员风采的栏目 [https://gitee.com/gitee-stars/](https://gitee.com/gitee-stars/)
+```powershell
+git init -b master
+git add .
+git commit -m "发布 ClipBridge 0.2.0"
+git remote add origin https://gitee.com/ailuo047/huchuan.git
+git push -u origin master
+```
