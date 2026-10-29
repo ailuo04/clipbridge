@@ -4,6 +4,14 @@
 
 客户端会自动读取本仓库的 `latest.json`，验证签名和安装包哈希后再更新。不要在客户端中加入 Gitee 访问令牌。
 
+当前 Windows 0.2.0 发布文件：
+
+- 安装器：`ClipBridge-0.2.0-win-x64-Setup.exe`
+- 自动更新包：`ClipBridge-0.2.0-win-x64.zip`
+- 更新清单：`latest.json`
+
+安装器会按需安装 Microsoft .NET 8 Desktop Runtime，并创建开始菜单、可选桌面快捷方式及卸载入口。
+
 发布新版本时，在源码目录运行：
 
 ```powershell
@@ -11,6 +19,14 @@
 ```
 
 Windows ZIP 和 Android APK 直接放在仓库根目录，文件名包含版本号，并由 `latest.json` 中的签名清单指向。
+
+构建 Setup EXE 需要 Inno Setup 6：
+
+```powershell
+winget install --id JRSoftware.InnoSetup --exact
+```
+
+`Publish-Release.ps1` 会同时生成 Windows ZIP 和 Setup EXE，并把安装器地址、大小和 SHA-256 写进签名清单。
 
 首次推送时，将当前目录作为独立仓库：
 
