@@ -4,10 +4,10 @@
 
 客户端会自动读取本仓库的 `latest.json`，验证签名和安装包哈希后再更新。不要在客户端中加入 Gitee 访问令牌。
 
-当前 Windows 0.3.1 发布文件：
+当前 Windows 0.3.2 发布文件：
 
-- 安装器：`ClipBridge-0.3.1-win-x64-Setup.exe`
-- 自动更新包：`ClipBridge-0.3.1-win-x64.zip`
+- 安装器：`ClipBridge-0.3.2-win-x64-Setup.exe`
+- 自动更新包：`ClipBridge-0.3.2-win-x64.zip`
 - 更新清单：`latest.json`
 
 安装器会按需安装 Microsoft .NET 8 Desktop Runtime，默认创建桌面快捷方式，并创建开始菜单和卸载入口。程序和安装器统一使用新的 ClipBridge 应用图标。
