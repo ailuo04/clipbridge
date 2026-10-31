@@ -1,88 +1,20 @@
 version: "1.0"
 name: clipbridge-release
-displayName: ClipBridge 安全发布
+displayName: ClipBridge 发布入口说明
 stages:
-  - name: validate
-    displayName: 校验签名和发布文件
+  - name: notice
+    displayName: 正式发布已迁移到云端 Windows 构建
     strategy: naturally
     trigger: auto
     executor:
       - gitee
     steps:
       - step: custom-build@custom
-        name: verify_release_files
-        displayName: 验证更新清单、ZIP 和安装器
+        name: release_notice
+        displayName: 查看新的发布方式
         commands: |-
-          set -eu
-          python3 - <<'PY'
-          import base64, hashlib, json, os, re, subprocess, tempfile, zipfile
-          from pathlib import Path
-
-          version = '0.3.6'
-          if not re.fullmatch(r'\d+\.\d+\.\d+', version):
-              raise SystemExit('Invalid RELEASE_VERSION')
-          envelope = json.loads(Path('latest-v2.json').read_text(encoding='utf-8'))
-          payload = base64.b64decode(envelope['payload'], validate=True)
-          signature = base64.b64decode(envelope['signature'], validate=True)
-          public_key = base64.b64decode('MIIBojANBgkqhkiG9w0BAQEFAAOCAY8AMIIBigKCAYEA5t+dU1iwMo0ggbetWn5FOjbxJ47gSvIru2liIlSEHcAY2yl6xCrPaNMcBVXlYMLHrwhr6rPY5QPE8X5b+tCvvz8Apl/RKzRQ3C3j6p0T9K5/0wvVPjgS/SqEfeUJ9kXq9VK686efM4BCGKWGP+iCPOJr7kjHOtjPDrlkBx4pcAWAINkU+U4EbQ+cs0BssqG5vgZZwSIa1fTjLK4LwTEVzQq9IEobs+/ujUsNwM8wgWXwWzmZb4b2KkPyT5Y1i0SRXN7xXg5d4ZyGEzXs+QOsNdhBI8XMMnKz/Reu6zDD5RSntwCfcpyOuAYLEteWNINBGlbt10sJD93WbMWm8M035rzX0loYXwZM4QjYTZidfLptDvz+3V8QGgGJWPh3Wc+n88Y7ziaCXPZg2LvwO+Y0vMCK7qWuHbLfrT/2iafNPvOzMTsXSGxbn6X4pDghAgniuHTb6T5dlkApra5WGIGTzVs1yfg/s0EFHJ3B23U+G0Sde8b02em9v6SRURktogxZAgMBAAE=', validate=True)
-          with tempfile.TemporaryDirectory() as tmp:
-              root = Path(tmp)
-              (root / 'key.der').write_bytes(public_key)
-              (root / 'payload').write_bytes(payload)
-              (root / 'signature').write_bytes(signature)
-              subprocess.run(['openssl', 'pkey', '-pubin', '-inform', 'DER', '-in', str(root / 'key.der'), '-out', str(root / 'key.pem')], check=True)
-              subprocess.run(['openssl', 'dgst', '-sha256', '-verify', str(root / 'key.pem'), '-signature', str(root / 'signature'), str(root / 'payload')], check=True)
-          data = json.loads(payload)
-          win = data['windows']
-          if data['schema'] != 1 or win['version'] != version:
-              raise SystemExit('Manifest schema or version does not match')
-          base = 'https://gitee.com/ailuo047/huchuan/raw/master/'
-          zip_name = f'ClipBridge-{version}-win-x64.zip'
-          setup_name = f'ClipBridge-{version}-win-x64-Setup.exe'
-          for name, size, digest, url in (
-              (zip_name, win['size'], win['sha256'], win['url']),
-              (setup_name, win['installerSize'], win['installerSha256'], win['installerUrl']),
-          ):
-              path = Path(name)
-              if not path.is_file() or path.stat().st_size != size or url != base + name:
-                  raise SystemExit(f'File, size, or URL mismatch: {name}')
-              actual = hashlib.sha256()
-              with path.open('rb') as source:
-                  for chunk in iter(lambda: source.read(1024 * 1024), b''):
-                      actual.update(chunk)
-              if actual.hexdigest().lower() != digest.lower():
-                  raise SystemExit(f'SHA-256 mismatch: {name}')
-              print(f'PASS {name}')
-          with zipfile.ZipFile(zip_name) as archive:
-              required = {'ClipBridge.exe', 'ClipBridge.dll', 'ClipBridge.deps.json', 'ClipBridge.runtimeconfig.json'}
-              if set(archive.namelist()) != required or archive.testzip() is not None:
-                  raise SystemExit('Update ZIP entries invalid')
-          print('PASS signed manifest, package hashes and ZIP contents')
-          PY
-  - name: publish
-    displayName: 创建 Gitee 发行版
-    strategy: naturally
-    trigger: auto
-    executor:
-      - gitee
-    steps:
-      - step: release@gitee
-        name: publish_release
-        displayName: 发布安装器附件
-        releaseName: "ClipBridge / 互传 0.3.6"
-        description: |-
-          ## Windows 0.3.6
-          - 重新设计左上角应用图标底座、标题和设备信息的排版。
-          - 更新检查移至顶部，主题切换移至底部；优化主题切换、窗口操作和运行记录外观。
-          - 修复更新程序的启动方式，用户无需自己的发布密钥。
-          - 由于旧更新签名私钥丢失，0.3.5 或更早版本需要手动安装一次本版本，之后才能使用新的自动更新渠道。
-          - 安装器内含 .NET 8 Desktop Runtime；缺少运行环境时需要管理员授权。安装器未进行 Authenticode 代码签名，干净机器上的首次安装和旧版原位升级尚未验证。Android APK 尚未发布。
-        tagName: "v0.3.6"
-        upstreamArtifact: []
-        assertFiles:
-          - "./ClipBridge-0.3.6-win-x64-Setup.exe"
-        prerelease: false
-        allowUpdate: false
+          echo "Windows packaging now runs in the private GitHub source repository."
+          echo "Use Actions > Publish to Gitee. This workflow does not publish."
 strategy:
-  timeout: 20
+  timeout: 5
   cloneDepth: 1
