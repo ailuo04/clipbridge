@@ -70,7 +70,13 @@ stages:
         name: publish_release
         displayName: 发布安装器附件
         releaseName: "ClipBridge / 互传 0.3.6"
-        description: "Windows 更新说明请参阅仓库 README。0.3.5 或更早版本因旧更新签名私钥丢失，需要手动安装支持新密钥的版本后才能使用新更新渠道。安装器未进行 Authenticode 代码签名。"
+        description: |-
+          ## Windows 0.3.6
+          - 重新设计左上角应用图标底座、标题和设备信息的排版。
+          - 更新检查移至顶部，主题切换移至底部；优化主题切换、窗口操作和运行记录外观。
+          - 修复更新程序的启动方式，用户无需自己的发布密钥。
+          - 由于旧更新签名私钥丢失，0.3.5 或更早版本需要手动安装一次本版本，之后才能使用新的自动更新渠道。
+          - 安装器内含 .NET 8 Desktop Runtime；缺少运行环境时需要管理员授权。安装器未进行 Authenticode 代码签名，干净机器上的首次安装和旧版原位升级尚未验证。Android APK 尚未发布。
         tagName: "v0.3.6"
         upstreamArtifact: []
         assertFiles:
