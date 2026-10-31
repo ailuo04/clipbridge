@@ -1,43 +1,20 @@
-# 互传
+# 互传 ClipBridge
 
-这是 ClipBridge / 互传的公开更新发布仓库。
+当前 Windows 版本：**0.3.7**
 
-客户端会自动读取本仓库的 `latest.json`，验证签名和安装包哈希后再更新。不要在客户端中加入 Gitee 访问令牌。
+[下载安装包](https://gitee.com/ailuo047/huchuan/releases/download/v0.3.7/ClipBridge-0.3.7-win-x64-Setup.exe) · [发行版与更新说明](https://gitee.com/ailuo047/huchuan/releases/tag/v0.3.7)
 
-当前 Windows 0.3.5 发布文件：
+## 更新内容
 
-- 安装器：`ClipBridge-0.3.5-win-x64-Setup.exe`
-- 自动更新包：`ClipBridge-0.3.5-win-x64.zip`
-- 更新清单：`latest.json`
+优化左上角真实应用图标、标题和设备信息排版；更新检查移至顶部，主题切换移至底部，改善主题动画、窗口操作和运行记录；修复更新辅助进程启动并启用新的签名更新渠道；采用约 2.5 MB 轻量安装器，缺少运行环境时才从 Microsoft 官方下载并校验 .NET 10；支持登录 GitHub 后一键云端构建、签名和 Gitee 发布。原版 0.3.5 及更早用户需手动安装一次本版。
 
-本次更新调整了 Windows 控制面板界面，支持白色、黑色和跟随电脑主题。
+## 安装与自动更新
 
-Android APK 尚未发布；0.3.5 尚未完成实际安装和端到端更新验证，安装器未进行 Authenticode 代码签名。
+- 下载安装器并运行；缺少 .NET 10 桌面运行时会从 Microsoft 官方联网下载、校验 SHA-256，并请求管理员授权安装。
+- 原版 0.3.5 及更早用户需手动安装一次本版，再使用新的自动更新渠道。普通用户不需要任何发布密钥。
+- 安装器未进行 Authenticode 代码签名；干净电脑首次安装、原版原位升级和真实生产网络更新尚未全面验证。
+- 旧版 latest.json 与历史 ZIP 保留；新客户端读取 latest-v2.json。Android APK 尚未发布。
 
-安装器会按需安装 Microsoft .NET 8 Desktop Runtime，默认创建桌面快捷方式，并创建开始菜单和卸载入口。程序和安装器统一使用新的 ClipBridge 应用图标。
+## 发布方式
 
-发布新版本时，在源码目录运行：
-
-```powershell
-.\tools\Publish-Release.ps1 -Version 0.3.0 -Notes '本次更新说明' -AndroidApkPath 'android\app\build\outputs\apk\release\app-release.apk'
-```
-
-Windows ZIP 和 Android APK 直接放在仓库根目录，文件名包含版本号，并由 `latest.json` 中的签名清单指向。
-
-构建 Setup EXE 需要 Inno Setup 6：
-
-```powershell
-winget install --id JRSoftware.InnoSetup --exact
-```
-
-`Publish-Release.ps1` 会同时生成 Windows ZIP 和 Setup EXE，并把安装器地址、大小和 SHA-256 写进签名清单。
-
-首次推送时，将当前目录作为独立仓库：
-
-```powershell
-git init -b master
-git add .
-git commit -m "发布 ClipBridge 0.2.0"
-git remote add origin https://gitee.com/ailuo047/huchuan.git
-git push -u origin master
-```
+私有源码在 GitHub；GitHub Actions 负责 Windows 构建与签名，Gitee 仅分发公开产物。发布者重置电脑后登录 GitHub，在私有源码仓库 Actions 运行 Publish to Gitee 即可；不依赖本地密钥。账户/令牌若失效仍需重新授权，发布签名私钥应另留加密备份。
