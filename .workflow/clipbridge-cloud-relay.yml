@@ -1,0 +1,83 @@
+version: "1.0"
+name: clipbridge-cloud-relay
+displayName: ClipBridge 云端安装包中转
+stages:
+  - name: fetch_and_publish
+    displayName: 校验云端产物并上传发行版附件
+    strategy: naturally
+    trigger: auto
+    executor:
+      - gitee
+    steps:
+      - step: custom-build@custom
+        name: fetch_signed_bundle
+        displayName: 下载并校验已签名公开产物
+        commands: |-
+          set -eu
+          python3 - <<'PY'
+          import base64,hashlib,json,subprocess,tempfile,urllib.request,zipfile
+          from pathlib import Path
+          cfg=json.loads(base64.b64decode('eyJ1cmwiOiAiaHR0cHM6Ly9wcm9kdWN0aW9ucmVzdWx0c3NhMTAuYmxvYi5jb3JlLndpbmRvd3MubmV0L2FjdGlvbnMtcmVzdWx0cy9mZDVhMjIyMi04ZjJmLTRjYTMtOGE4MC1jMTk0NTlkYWE3MWQvd29ya2Zsb3ctam9iLXJ1bi03MDY4OGY3NC1jZTc1LTVjOGItOWMyYS05ZTdkMjU0NmViNTgvYXJ0aWZhY3RzLzEzM2FiNGZkNjIwODRhZWZhYjZkMTRiMTQzMDgxMjJjYjc3MmZkZGU5NDE5MTc5MDM1Yjg3NDY2NjU2ZTQ1NzguemlwP3JzY2Q9YXR0YWNobWVudCUzQitmaWxlbmFtZSUzRCUyMnJlbGVhc2UtMC4zLjYuemlwJTIyJnJzY3Q9YXBwbGljYXRpb24lMkZ6aXAmc2U9MjAyNi0xMC0zMVQxMCUzQTM4JTNBNTJaJnNpZz1WOHVERXc5UW1WU0xHTEx1WVFuZnQwRiUyRmFpMWlwOUtrJTJCdUFsMk9tMmtNVSUzRCZza2U9MjAyNi0xMC0zMVQxMyUzQTU0JTNBMDZaJnNrb2lkPWNhNzU5M2Q0LWVlNDItNDZjZC1hZjg4LThiODg2YTJmODRlYiZza3M9YiZza3Q9MjAyNi0xMC0zMVQwOSUzQTU0JTNBMDZaJnNrdGlkPTM5OGE2NjU0LTk5N2ItNDdlOS1iMTJiLTk1MTViODk2YjRkZSZza3Y9MjAyNS0xMS0wNSZzcD1yJnNwcj1odHRwcyZzcj1iJnN0PTIwMjYtMTAtMzFUMTAlM0EyOCUzQTQ3WiZzdj0yMDI1LTExLTA1IiwgInZlcnNpb24iOiAiMC4zLjYiLCAid2luIjogeyJ2ZXJzaW9uIjogIjAuMy42IiwgInVybCI6ICJodHRwczovL2dpdGVlLmNvbS9haWx1bzA0Ny9odWNodWFuL3Jhdy9tYXN0ZXIvQ2xpcEJyaWRnZS0wLjMuNi13aW4teDY0LnppcCIsICJzaXplIjogNDg4NTMzLCAic2hhMjU2IjogIjIxZDUzYWJhMTAzNTg1N2ViMWFhZWU3NzY5MjdhMjMwOTljYmM5NDRlNzFlMjY4MGI3MmIyYzQ3ZTQ3N2JjOTkiLCAiaW5zdGFsbGVyVXJsIjogImh0dHBzOi8vZ2l0ZWUuY29tL2FpbHVvMDQ3L2h1Y2h1YW4vcmVsZWFzZXMvZG93bmxvYWQvdjAuMy42L0NsaXBCcmlkZ2UtMC4zLjYtd2luLXg2NC1TZXR1cC5leGUiLCAiaW5zdGFsbGVyU2l6ZSI6IDYxOTg4MjE5LCAiaW5zdGFsbGVyU2hhMjU2IjogIjlmM2RlYjQ2YWRhYzE2YzI2NTdmNmZhZjUzYjAxYzExYjRmM2VlZDE0ZjExZDRkNDk1ZDQ4ZGJjZGEyZWE3YmEiLCAibm90ZXMiOiAiXHU0ZjE4XHU1MzE2XHU1ZGU2XHU0ZTBhXHU4OWQyXHU1ZTk0XHU3NTI4XHU1NmZlXHU2ODA3XHUzMDAxXHU2ODA3XHU5ODk4XHU1NDhjXHU4YmJlXHU1OTA3XHU0ZmUxXHU2MDZmXHU2MzkyXHU3MjQ4XHVmZjFiXHU4YzAzXHU2NTc0XHU5ODc2XHU5MGU4XHU2NmY0XHU2NWIwXHU2MzA5XHU5NGFlXHU1NDhjXHU1ZTk1XHU5MGU4XHU0ZTNiXHU5ODk4XHU1MjA3XHU2MzYyXHVmZjBjXHU2NTM5XHU1NTg0XHU0ZTNiXHU5ODk4XHU1MmE4XHU3NTNiXHU1M2NhXHU3YTk3XHU1M2UzXHU2NGNkXHU0ZjVjXHVmZjFiXHU0ZmVlXHU1OTBkXHU2NmY0XHU2NWIwXHU4Zjg1XHU1MmE5XHU4ZmRiXHU3YTBiXHU1NDJmXHU1MmE4XHVmZjBjXHU2M2E1XHU1MTY1XHU2NWIwXHU3Njg0XHU3YjdlXHU1NDBkXHU2NmY0XHU2NWIwXHU2ZTIwXHU5MDUzXHVmZjFiXHU4ZmMxXHU3OWZiXHU4MWYzIC5ORVQgMTBcdWZmMGNcdTVlNzZcdTU0MmZcdTc1MjhcdTRlOTFcdTdhZWZcdTRlMDBcdTk1MmVcdTY3ODRcdTVlZmFcdTMwMDFcdTdiN2VcdTU0MGRcdTU0OGMgR2l0ZWUgXHU1M2QxXHU1ZTAzXHUzMDAyXHU1MzlmXHU3MjQ4IDAuMy41IFx1NTNjYVx1NjZmNFx1NjVlOVx1NzI0OFx1NjcyY1x1OTcwMFx1NjI0Ylx1NTJhOFx1NWI4OVx1ODhjNVx1NGUwMFx1NmIyMVx1MzAwMiJ9LCAicHVibGljX2tleSI6ICJNSUlCb2pBTkJna3Foa2lHOXcwQkFRRUZBQU9DQVk4QU1JSUJpZ0tDQVlFQTV0K2RVMWl3TW8wZ2diZXRXbjVGT2pieEo0N2dTdklydTJsaUlsU0VIY0FZMnlsNnhDclBhTk1jQlZYbFlNTEhyd2hyNnJQWTVRUEU4WDViK3RDdnZ6OEFwbC9SS3pSUTNDM2o2cDBUOUs1LzB3dlZQamdTL1NxRWZlVUo5a1hxOVZLNjg2ZWZNNEJDR0tXR1AraUNQT0pyN2tqSE90alBEcmxrQng0cGNBV0FJTmtVK1U0RWJRK2NzMEJzc3FHNXZnWlp3U0lhMWZUakxLNEx3VEVWelFxOUlFb2JzKy91alVzTndNOHdnV1h3V3ptWmI0YjJLa1B5VDVZMWkwU1JYTjd4WGc1ZDRaeUdFelhzK1FPc05kaEJJOFhNTW5Lei9SZXU2ekRENVJTbnR3Q2ZjcHlPdUFZTEV0ZVdOSU5CR2xidDEwc0pEOTNXYk1XbThNMDM1cnpYMGxvWVh3Wk00UWpZVFppZGZMcHREdnorM1Y4UUdnR0pXUGgzV2Mrbjg4WTd6aWFDWFBaZzJMdndPK1kwdk1DSzdxV3VIYkxmclQvMmlhZk5Qdk96TVRzWFNHeGJuNlg0cERnaEFnbml1SFRiNlQ1ZGxrQXByYTVXR0lHVHpWczF5ZmcvczBFRkhKM0IyM1UrRzBTZGU4YjAyZW05djZTUlVSa3RvZ3haQWdNQkFBRT0iLCAibWFuaWZlc3Rfc2hhMjU2IjogIjUyYzU3ZTAyYjUyOGQ4MWM1OTA5ZGIyYmJiYWIyYmIyYzg4NGI3ZjRkN2NmZGIyYTE0MTM1OTgwOTQwY2UzZTYiLCAiYXJjaGl2ZV9kaWdlc3QiOiAic2hhMjU2Ojk3OGI2MDJiMTU0OWNkYWZkNDRmYjBiYWFjNjY3YmJkZTM1NmUxNjAwODg2Yjg5Y2I0NjdhZGQ5Zjg0NDExMWMifQ=='))
+          version=cfg['version']
+          setup='ClipBridge-'+version+'-win-x64-Setup.exe'
+          zipname='ClipBridge-'+version+'-win-x64.zip'
+          archive=Path('github-release-bundle.zip')
+          with urllib.request.urlopen(cfg['url'],timeout=300) as source,archive.open('wb') as output:
+              total=0
+              while True:
+                  chunk=source.read(1024*1024)
+                  if not chunk: break
+                  total+=len(chunk)
+                  if total>100*1024*1024: raise RuntimeError('Artifact exceeds size limit')
+                  output.write(chunk)
+          print('Downloaded binary-only cloud artifact',total,'bytes')
+          if cfg['archive_digest']:
+              if 'sha256:'+hashlib.sha256(archive.read_bytes()).hexdigest()!=cfg['archive_digest']: raise RuntimeError('Artifact archive digest mismatch')
+          with zipfile.ZipFile(archive) as bundle:
+              expected={setup,zipname,'latest-v2.json','manifest-'+version+'.json','release-notes.txt'}
+              if set(bundle.namelist())!=expected: raise RuntimeError('Unexpected artifact file list')
+              envelope=bundle.read('latest-v2.json')
+              if hashlib.sha256(envelope).hexdigest()!=cfg['manifest_sha256']: raise RuntimeError('Manifest mismatch')
+              if Path('manifest-'+version+'.json').read_bytes()!=envelope: raise RuntimeError('Repository version manifest mismatch')
+              decoded=json.loads(envelope)
+              payload=base64.b64decode(decoded['payload'],validate=True)
+              signature=base64.b64decode(decoded['signature'],validate=True)
+              with tempfile.TemporaryDirectory() as temp:
+                  p=Path(temp)
+                  (p/'key.der').write_bytes(base64.b64decode(cfg['public_key'],validate=True))
+                  (p/'payload').write_bytes(payload)
+                  (p/'signature').write_bytes(signature)
+                  subprocess.run(['openssl','pkey','-pubin','-inform','DER','-in',str(p/'key.der'),'-out',str(p/'key.pem')],check=True)
+                  subprocess.run(['openssl','dgst','-sha256','-verify',str(p/'key.pem'),'-signature',str(p/'signature'),str(p/'payload')],check=True)
+              if json.loads(payload)['windows']!=cfg['win']: raise RuntimeError('Signed release fields mismatch')
+              for name,size,digest in [(setup,cfg['win']['installerSize'],cfg['win']['installerSha256']),(zipname,cfg['win']['size'],cfg['win']['sha256'])]:
+                  if bundle.getinfo(name).file_size!=size: raise RuntimeError('Artifact size mismatch')
+                  actual=hashlib.sha256()
+                  with bundle.open(name) as source,Path(name).open('wb') as output:
+                      for chunk in iter(lambda:source.read(1024*1024),b''):
+                          actual.update(chunk)
+                          output.write(chunk)
+                  if actual.hexdigest()!=digest: raise RuntimeError('Artifact SHA-256 mismatch')
+                  print('PASS',name,'size and SHA-256')
+          print('PASS signed manifest and staged Setup')
+          PY
+        artifacts:
+          - name: CLIPBRIDGE_SETUP
+            path:
+              - "./ClipBridge-0.3.6-win-x64-Setup.exe"
+            type: .tar.gz
+      - step: release@gitee
+        name: attach_verified_setup
+        displayName: 将已校验安装包上传发行版
+        releaseName: "ClipBridge / 互传 0.3.6"
+        description: "## Windows 0.3.6\n\n优化左上角应用图标、标题和设备信息排版；调整顶部更新按钮和底部主题切换，改善主题动画及窗口操作；修复更新辅助进程启动，接入新的签名更新渠道；迁移至 .NET 10，并启用云端一键构建、签名和 Gitee 发布。原版 0.3.5 及更早版本需手动安装一次。\n\n**升级说明：**原版 0.3.5 及更早版本因旧签名私钥丢失，需要手动安装一次本版；之后使用新的自动更新渠道。\n\n安装器内含 .NET 10 Desktop Runtime，缺少运行环境时需要管理员授权。安装器未进行 Authenticode 代码签名；干净电脑首次安装、原版原位升级和真实生产网络更新尚未全面验证。Android APK 尚未发布。\n\nZIP SHA-256: 21d53aba1035857eb1aaee776927a23099cbc944e71e2680b72b2c47e477bc99\n\nSetup SHA-256: 9f3deb46adac16c2657f6faf53b01c11b4f3eed14f11d4d495d48dbcda2ea7ba\n\n<!-- clipbridge-source:3556b475311a5abe08732cf7fa8eea990597c2f2;zip:21d53aba1035857eb1aaee776927a23099cbc944e71e2680b72b2c47e477bc99;setup:9f3deb46adac16c2657f6faf53b01c11b4f3eed14f11d4d495d48dbcda2ea7ba -->"
+        tagName: "v0.3.6"
+        upstreamArtifact:
+          - "${CLIPBRIDGE_SETUP}"
+        assertFiles:
+          - "./ClipBridge-0.3.6-win-x64-Setup.exe"
+        prerelease: true
+        allowUpdate: true
+strategy:
+  timeout: 20
+  cloneDepth: 1
