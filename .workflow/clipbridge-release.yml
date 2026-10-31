@@ -1,11 +1,6 @@
 version: "1.0"
 name: clipbridge-release
 displayName: ClipBridge 安全发布
-variables:
-  RELEASE_VERSION:
-    type: TEXT
-    default: "0.3.6"
-    description: 与签名更新清单和文件名一致的版本号
 stages:
   - name: validate
     displayName: 校验签名和发布文件
@@ -23,7 +18,7 @@ stages:
           import base64, hashlib, json, os, re, subprocess, tempfile, zipfile
           from pathlib import Path
 
-          version = os.environ.get('RELEASE_VERSION', '')
+          version = '0.3.6'
           if not re.fullmatch(r'\d+\.\d+\.\d+', version):
               raise SystemExit('Invalid RELEASE_VERSION')
           envelope = json.loads(Path('latest-v2.json').read_text(encoding='utf-8'))
@@ -74,12 +69,12 @@ stages:
       - step: release@gitee
         name: publish_release
         displayName: 发布安装器附件
-        releaseName: "ClipBridge / 互传 ${RELEASE_VERSION}"
+        releaseName: "ClipBridge / 互传 0.3.6"
         description: "Windows 更新说明请参阅仓库 README。0.3.5 或更早版本因旧更新签名私钥丢失，需要手动安装支持新密钥的版本后才能使用新更新渠道。安装器未进行 Authenticode 代码签名。"
-        tagName: "v${RELEASE_VERSION}"
+        tagName: "v0.3.6"
         upstreamArtifact: []
         assertFiles:
-          - "./ClipBridge-${RELEASE_VERSION}-win-x64-Setup.exe"
+          - "./ClipBridge-0.3.6-win-x64-Setup.exe"
         prerelease: false
         allowUpdate: false
 strategy:
