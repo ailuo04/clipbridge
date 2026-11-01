@@ -1,0 +1,30 @@
+name: ClipBridge preflight
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-test:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Set up .NET SDK
+        uses: actions/setup-dotnet@v4
+        with:
+          global-json-file: global.json
+      - name: Build application and smoke-test projects
+        shell: pwsh
+        run: |
+          dotnet build ClipBridge.csproj --configuration Release --nologo
+          dotnet build tools/UiSmokeTests/UiSmokeTests.csproj --configuration Release --nologo
+          dotnet build tools/UpdateSmokeTests/UpdateSmokeTests.csproj --configuration Release --nologo
+      - name: Test release publisher
+        shell: pwsh
+        run: python -m unittest discover -s tools -p 'test_publish_github.py'

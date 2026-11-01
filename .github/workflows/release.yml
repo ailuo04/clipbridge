@@ -1,0 +1,77 @@
+name: Publish ClipBridge release
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Semantic version, for example 0.3.9'
+        required: true
+        type: string
+      notes:
+        description: 'Release notes shown to users'
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: windows-latest
+    env:
+      CLIPBRIDGE_UPDATE_PRIVATE_KEY: ${{ secrets.CLIPBRIDGE_UPDATE_PRIVATE_KEY }}
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      DISPATCH_VERSION: ${{ inputs.version }}
+      DISPATCH_NOTES: ${{ inputs.notes }}
+    steps:
+      - name: Checkout release source
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Set up .NET SDK
+        uses: actions/setup-dotnet@v4
+        with:
+          global-json-file: global.json
+      - name: Resolve release metadata
+        shell: pwsh
+        run: |
+          if ($env:GITHUB_EVENT_NAME -eq 'workflow_dispatch') {
+              $version = $env:DISPATCH_VERSION
+              $notes = $env:DISPATCH_NOTES
+          } else {
+              $version = $env:GITHUB_REF_NAME -replace '^v', ''
+              $notesPath = Join-Path $env:GITHUB_WORKSPACE "release-notes-$version.txt"
+              if (-not (Test-Path -LiteralPath $notesPath -PathType Leaf)) { throw "缺少发布说明文件：$notesPath" }
+              $notes = Get-Content -LiteralPath $notesPath -Raw -Encoding UTF8
+          }
+          if ($version -notmatch '^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$') { throw "版本号无效：$version" }
+          if ([string]::IsNullOrWhiteSpace($notes)) { throw '发布说明不能为空。' }
+          "RELEASE_VERSION=$version" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          Add-Content -Path $env:GITHUB_ENV -Value 'RELEASE_NOTES<<CLIPBRIDGE_NOTES'
+          Add-Content -Path $env:GITHUB_ENV -Value $notes
+          Add-Content -Path $env:GITHUB_ENV -Value 'CLIPBRIDGE_NOTES'
+      - name: Install verified Inno Setup
+        shell: pwsh
+        run: |
+          $tools = Join-Path $env:RUNNER_TEMP 'clipbridge-build-tools'
+          $output = & pwsh -File tools/Get-BuildTools.ps1 -OutputDirectory $tools
+          if ($LASTEXITCODE -ne 0) { throw "Get-BuildTools 失败：$LASTEXITCODE" }
+          $line = $output | Where-Object { $_ -like 'InnoCompilerPath=*' } | Select-Object -Last 1
+          if (-not $line) { throw '没有找到 InnoCompilerPath 输出。' }
+          "INNO_COMPILER_PATH=$($line -replace '^InnoCompilerPath=', '')" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+      - name: Build test projects
+        shell: pwsh
+        run: |
+          dotnet build ClipBridge.csproj --configuration Release --nologo
+          dotnet build tools/UiSmokeTests/UiSmokeTests.csproj --configuration Release --nologo
+          dotnet build tools/UpdateSmokeTests/UpdateSmokeTests.csproj --configuration Release --nologo
+          python -m unittest discover -s tools -p 'test_publish_github.py'
+      - name: Build, sign and publish release
+        shell: pwsh
+        run: |
+          $output = Join-Path $env:RUNNER_TEMP ("clipbridge-release-" + $env:RELEASE_VERSION)
+          & pwsh -File tools/Publish-GitHub.ps1 -Version $env:RELEASE_VERSION -Notes $env:RELEASE_NOTES -OutputDirectory $output -InnoCompilerPath $env:INNO_COMPILER_PATH -Publish
+          if ($LASTEXITCODE -ne 0) { throw "Publish-GitHub 失败：$LASTEXITCODE" }

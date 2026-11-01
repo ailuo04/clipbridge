@@ -1,0 +1,1 @@
+GitHub-only 发布迁移版：源码、更新清单、Windows 安装包和 GitHub Actions 统一到 ailuo04/clipbridge。0.3.8 用户需要手动安装一次本版；本版之后使用 GitHub 上的新签名更新渠道自动更新。普通用户不需要发布密钥。

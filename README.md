@@ -1,20 +1,37 @@
 # 互传 ClipBridge
 
-当前 Windows 版本：**0.3.8**
+## GitHub-only 发布与恢复
 
-[下载安装包](https://gitee.com/ailuo047/huchuan/releases/download/v0.3.8/ClipBridge-0.3.8-win-x64-Setup.exe) · [发行版与更新说明](https://gitee.com/ailuo047/huchuan/releases/tag/v0.3.8)
+唯一仓库：[github.com/ailuo04/clipbridge](https://github.com/ailuo04/clipbridge)
 
-## 更新内容
+- 源码、构建脚本、测试和 GitHub Actions 都在本仓库。
+- [下载安装器与 GitHub Release](https://github.com/ailuo04/clipbridge/releases)
+- 客户端更新清单：[GitHub Raw latest-v2.json](https://raw.githubusercontent.com/ailuo04/clipbridge/master/latest-v2.json)
+- 发布手册：[tools/GitHub-Release-Runbook.md](tools/GitHub-Release-Runbook.md)
 
-建立 Gitee-only 可恢复发布链路，源码迁移到 Gitee 私有仓库；同时保留签名更新机制。由于更新签名密钥迁移，0.3.7 用户需要手动安装一次 0.3.8，之后恢复自动更新。原版 0.3.5 及更早用户也需要手动安装一次本版。
+以后正式发布只使用 GitHub，不再发布到 Gitee。普通用户不需要任何发布密钥；更新清单使用 RSA 签名，安装包使用 SHA-256 校验。
 
-## 安装与自动更新
+## 0.3.8 到 0.3.9 的迁移
 
-- 下载安装器并运行；缺少 .NET 10 桌面运行时会从 Microsoft 官方联网下载、校验 SHA-256，并请求管理员授权安装。
-- 0.3.7 以及原版 0.3.5 及更早用户需手动安装一次本版，再使用新的自动更新渠道。普通用户不需要任何发布密钥。
-- 安装器未进行 Authenticode 代码签名；干净电脑首次安装、原版原位升级和真实生产网络更新尚未全面验证。
-- 旧版 latest.json 与历史 ZIP 保留；新客户端读取 latest-v2.json。Android APK 尚未发布。
+0.3.8 及更早版本仍会请求旧的 Gitee 更新地址，无法通过远程修改清单自动切换到 GitHub。因此 0.3.8 用户需要手动安装一次 0.3.9。0.3.9 内置 GitHub 更新地址和新的签名公钥，0.3.9 之后的版本会继续通过 GitHub 自动更新。
 
-## 发布方式
+## 本地开发
 
-源码保存在 Gitee 私有仓库，公开分发和发行版也只使用 Gitee。云端或专用 Windows 发布 runner 通过受保护变量注入 GITEE_TOKEN 和更新签名私钥，完成构建、签名和发布；电脑重置后重新克隆 Gitee 私有源码即可恢复开发。签名私钥必须在仓库外保留加密备份，不能提交到任何仓库。
+安装 global.json 指定的 .NET SDK 10.0.403，然后运行：
+
+~~~powershell
+dotnet build ClipBridge.csproj -c Release
+pwsh ./tools/Get-BuildTools.ps1 -OutputDirectory "$env:LOCALAPPDATA/ClipBridgeBuildTools"
+~~~
+
+本地打包和验签默认不上传：
+
+~~~powershell
+pwsh ./tools/Publish-GitHub.ps1 -Version 0.3.9 -Notes '本次更新说明。' -OutputDirectory "$env:TEMP/clipbridge-release" -PrivateKeyPath "$env:USERPROFILE/.clipbridge-release-keys/clipbridge-update-private-0.3.9.pem" -InnoCompilerPath "$env:LOCALAPPDATA/ClipBridgeBuildTools/InnoSetup/ISCC.exe"
+~~~
+
+## 电脑重置后的发布恢复
+
+重新克隆本仓库即可恢复源码、测试和发布工作流。更新私钥不能由公钥恢复，必须从仓库外的两份加密备份恢复到 GitHub Actions Secret CLIPBRIDGE_UPDATE_PRIVATE_KEY；私钥不提交仓库。发布时推送 v0.3.9 形式的标签，或在 Actions 中手动运行发布工作流；工作流会在 Windows runner 上构建、签名、提交更新清单、上传 Setup.exe 和 ZIP，并创建 GitHub Release。
+
+具体规则见 [AGENTS.md](AGENTS.md)。

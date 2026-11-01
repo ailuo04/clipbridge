@@ -1,0 +1,13 @@
+{
+  "releaseRepositoryUrl": "https://github.com/ailuo04/clipbridge.git",
+  "releaseDirectory": ".",
+  "branch": "master",
+  "manifestFile": "latest-v2.json",
+  "rawBaseUrl": "https://raw.githubusercontent.com/ailuo04/clipbridge/master",
+  "manifestUrl": "https://raw.githubusercontent.com/ailuo04/clipbridge/master/latest-v2.json",
+  "githubReleaseRequired": true,
+  "installerAssetRequired": true,
+  "releaseTagPrefix": "v",
+  "legacyManifestFile": "latest.json",
+  "cloudWorkflow": ".github/workflows/release.yml"
+}

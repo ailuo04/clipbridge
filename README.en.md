@@ -1,36 +1,15 @@
-# 互传
+# ClipBridge
 
-#### Description
-互传 Windows / Android 自动更新安装包与签名清单
+ClipBridge is a Windows clipboard bridge with signed GitHub releases and automatic updates.
 
-#### Software Architecture
-Software architecture description
+## Repositories and releases
 
-#### Installation
+The single source and release repository is [github.com/ailuo04/clipbridge](https://github.com/ailuo04/clipbridge). Future releases use GitHub only. The signed update channel is [latest-v2.json](https://raw.githubusercontent.com/ailuo04/clipbridge/master/latest-v2.json).
 
-1.  xxxx
-2.  xxxx
-3.  xxxx
+## Migration
 
-#### Instructions
+Versions 0.3.8 and older still point to the legacy update endpoint. Users on 0.3.8 must manually install 0.3.9 once. Version 0.3.9 embeds the GitHub update endpoint and the new signing public key; later versions continue with automatic GitHub updates.
 
-1.  xxxx
-2.  xxxx
-3.  xxxx
+## Recovery after a PC reset
 
-#### Contribution
-
-1.  Fork the repository
-2.  Create Feat_xxx branch
-3.  Commit your code
-4.  Create Pull Request
-
-
-#### Gitee Feature
-
-1.  You can use Readme\_XXX.md to support different languages, such as Readme\_en.md, Readme\_zh.md
-2.  Gitee blog [blog.gitee.com](https://blog.gitee.com)
-3.  Explore open source project [https://gitee.com/explore](https://gitee.com/explore)
-4.  The most valuable open source project [GVP](https://gitee.com/gvp)
-5.  The manual of Gitee [https://gitee.com/help](https://gitee.com/help)
-6.  The most popular members  [https://gitee.com/gitee-stars/](https://gitee.com/gitee-stars/)
+Clone this repository to restore the source, build scripts, tests and GitHub Actions. The update private key cannot be reconstructed from the public key. Keep two encrypted backups outside the repository and configure the key as the protected GitHub Actions Secret CLIPBRIDGE_UPDATE_PRIVATE_KEY. Normal users never need the release key.

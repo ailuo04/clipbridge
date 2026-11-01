@@ -1,0 +1,20 @@
+# .NET / Visual Studio generated files
+bin/
+obj/
+.vs/
+*.user
+*.suo
+
+# Keep private signing material out of version control.
+*.pfx
+*.p12
+*.pem
+*.key
+
+# Machine-local SDK junction
+/.dotnet/
+
+# Cloud/local release outputs
+/artifacts/
+/cloud-tools/
+__pycache__/

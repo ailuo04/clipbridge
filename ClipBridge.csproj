@@ -1,0 +1,21 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <AssemblyName>ClipBridge</AssemblyName>
+    <GenerateAssemblyInfo>True</GenerateAssemblyInfo>
+    <Version>0.3.9</Version>
+    <IncludeSourceRevisionInInformationalVersion>False</IncludeSourceRevisionInInformationalVersion>
+    <OutputType>WinExe</OutputType>
+    <UseWindowsForms>True</UseWindowsForms>
+    <ApplicationIcon>ClipBridge.ico</ApplicationIcon>
+    <Nullable>annotations</Nullable>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <LangVersion>12.0</LangVersion>
+    <AllowUnsafeBlocks>True</AllowUnsafeBlocks>
+    <CheckForOverflowUnderflow>False</CheckForOverflowUnderflow>
+  </PropertyGroup>
+  <ItemGroup>
+    <EmbeddedResource Include="ClipBridge.ico" LogicalName="ClipBridge.AppIcon.ico" />
+    <EmbeddedResource Include="release-signing-public-key.txt" LogicalName="ClipBridge.release-signing-public-key.txt" />
+    <Compile Remove="tools\**\*.cs" />
+  </ItemGroup>
+</Project>

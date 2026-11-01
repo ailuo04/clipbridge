@@ -1,0 +1,15 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <AssemblyName>ClipBridge</AssemblyName>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="..\..\ClipBridge\Windows\SelfUpdate.cs" Link="SelfUpdate.cs" />
+    <Compile Include="..\..\ClipBridge\Windows\UpdateProtocol.cs" Link="UpdateProtocol.cs" />
+    <Compile Include="..\..\ClipBridge\Windows\UpdateProtocolException.cs" Link="UpdateProtocolException.cs" />
+    <Compile Include="..\..\ClipBridge\Windows\AvailableUpdate.cs" Link="AvailableUpdate.cs" />
+    <EmbeddedResource Include="..\..\release-signing-public-key.txt" LogicalName="ClipBridge.release-signing-public-key.txt" />
+  </ItemGroup>
+</Project>
