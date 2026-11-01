@@ -118,6 +118,11 @@ class PublishTests(unittest.TestCase):
             self.publish()
         self.assertEqual(self.github.events, [])
 
+    def test_release_note_line_ending_difference_is_compatible(self):
+        self.github.files['release-notes-1.2.3.txt'] = self.win['notes'].encode() + b'\r\n'
+        self.publish()
+        self.assertNotIn('release-notes-1.2.3.txt', self.github.events)
+
     def test_version_order_and_validation(self):
         self.assertGreater(pub.version_tuple('1.10.0'), pub.version_tuple('1.9.9'))
         with self.assertRaises(pub.PublishError):

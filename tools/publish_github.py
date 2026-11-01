@@ -34,6 +34,10 @@ def sha256(data):
     return hashlib.sha256(data).hexdigest()
 
 
+def normalize_notes(value):
+    return value.replace('\r\n', '\n').replace('\r', '\n').rstrip('\n')
+
+
 def validate_bundle(directory, version):
     version_tuple(version)
     envelope_path = directory / 'latest-v2.json'
@@ -61,7 +65,7 @@ def validate_bundle(directory, version):
             raise PublishError(f'Bundle mismatch: {name}')
         if not 0 < len(content) < 100 * 1024 * 1024:
             raise PublishError('Artifact exceeds the supported size limit.')
-    if (directory / 'release-notes.txt').read_text(encoding='utf-8') != win.get('notes', ''):
+    if normalize_notes((directory / 'release-notes.txt').read_text(encoding='utf-8')) != normalize_notes(win.get('notes', '')):
         raise PublishError('Release notes mismatch.')
     return envelope, win
 
@@ -218,12 +222,25 @@ def publish(directory, version, source_sha, github):
         f'release-notes-{version}.txt': (directory / 'release-notes.txt').read_bytes(),
         f'manifest-{version}.json': envelope,
     }
+    existing_files = {}
     for name, content in immutable_files.items():
         old = github.content(name)
-        if old and base64.b64decode(old['content']) != content:
-            raise PublishError('Versioned file differs; resume using the original build artifact: ' + name)
+        existing_files[name] = old
+        if old:
+            previous = base64.b64decode(old['content'])
+            if name.startswith('release-notes-'):
+                try:
+                    same = normalize_notes(previous.decode('utf-8')) == normalize_notes(content.decode('utf-8'))
+                except UnicodeDecodeError:
+                    same = False
+            else:
+                same = previous == content
+            if not same:
+                raise PublishError('Versioned file differs; resume using the original build artifact: ' + name)
     print('Uploading immutable ZIP, notes and version manifest', flush=True)
     for name, content in immutable_files.items():
+        if existing_files[name] and name.startswith('release-notes-'):
+            continue
         github.write_file(name, content, immutable=True)
 
     if not release:
