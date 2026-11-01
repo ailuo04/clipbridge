@@ -183,7 +183,7 @@ def public_bytes(url, expected_size=None, expected_hash=None, max_bytes=2 * 1024
 def release_body(version, win, source_sha):
     return (
         f'## Windows {version}\n\n{win["notes"]}\n\n'
-        '**升级说明：**0.3.8 用户需要手动安装一次本版；从 0.3.9 开始，应用改用 GitHub 更新清单和新的签名密钥，后续版本可自动更新。\n\n'
+        '**升级说明：**0.3.8 用户需要先手动安装 0.3.9；0.3.9 及以后版本使用 GitHub 更新清单和新的签名密钥，后续版本可自动更新。\n\n'
         '普通用户不需要任何发布密钥。安装器未进行 Authenticode 代码签名；干净电脑首次安装、原版原位升级和真实生产网络更新仍需按实际环境验证。\n\n'
         f'ZIP SHA-256: {win["sha256"]}\n\nSetup SHA-256: {win["installerSha256"]}\n\n'
         f'<!-- clipbridge-source:{source_sha};zip:{win["sha256"]};setup:{win["installerSha256"]} -->'
@@ -199,6 +199,7 @@ def public_readme(version, win):
         '## 安装与自动更新\n\n'
         '- 0.3.8 用户需要手动安装一次 0.3.9；安装后应用会从 GitHub 获取签名更新清单，后续版本自动更新。\n'
         '- 普通用户不需要发布密钥；更新清单和安装包都会校验 SHA-256 与 RSA 签名。\n'
+        '- 0.3.10 安装器需要管理员权限创建安装目录；安装目录会授予当前用户 Modify 权限，后续更新无需重复 UAC。\n'
         '- 缺少 .NET 10 桌面运行时时，安装器从 Microsoft 官方下载、校验并请求管理员授权安装。\n'
         '- 安装器未进行 Authenticode 代码签名；Android APK 尚未发布。\n\n'
         '## 开发与发布\n\n'

@@ -128,6 +128,14 @@ class PublishTests(unittest.TestCase):
         with self.assertRaises(pub.PublishError):
             pub.version_tuple('01.2.3')
 
+    def test_public_readme_documents_elevated_install_and_non_elevated_updates(self):
+        readme = pub.public_readme('0.3.10', {
+            'installerUrl': 'https://example.invalid/setup.exe',
+            'notes': 'Installer policy test',
+        }).decode('utf-8')
+        self.assertIn('管理员权限', readme)
+        self.assertIn('后续更新无需重复 UAC', readme)
+
 
 if __name__ == '__main__':
     unittest.main()

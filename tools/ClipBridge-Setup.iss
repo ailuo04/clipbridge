@@ -30,10 +30,11 @@ OutputBaseFilename=ClipBridge-{#AppVersion}-win-x64-Setup
 #endif
 AppVersion={#AppVersion}
 AppPublisher=ClipBridge
-DefaultDirName={localappdata}\Programs\ClipBridge
+DefaultDirName={code:GetDefaultInstallDir}
 DefaultGroupName=ClipBridge
 UsePreviousAppDir=yes
-PrivilegesRequired=lowest
+DisableDirPage=no
+PrivilegesRequired=admin
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 OutputDir={#OutputDir}
@@ -54,6 +55,9 @@ Source: "{#BuildDir}\ClipBridge.dll"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#BuildDir}\ClipBridge.deps.json"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#BuildDir}\ClipBridge.runtimeconfig.json"; DestDir: "{app}"; Flags: ignoreversion
 
+[Dirs]
+Name: "{app}"; Permissions: users-modify
+
 #ifndef TestMode
 [Icons]
 Name: "{autoprograms}\ClipBridge"; Filename: "{app}\ClipBridge.exe"
@@ -66,6 +70,14 @@ Filename: "{app}\ClipBridge.exe"; Description: "启动 ClipBridge"; Flags: nowai
 [Code]
 var
   RuntimeDownloadPage: TDownloadWizardPage;
+
+function GetDefaultInstallDir(Param: String): String;
+begin
+  if DirExists('D:\own\app') then
+    Result := AddBackslash('D:\own\app') + 'ClipBridge'
+  else
+    Result := ExpandConstant('{localappdata}\Programs\ClipBridge');
+end;
 
 procedure InitializeWizard;
 begin

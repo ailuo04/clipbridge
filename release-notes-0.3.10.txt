@@ -1,0 +1,1 @@
+安装器权限修复：安装时使用管理员权限创建 D:\own\app\ClipBridge，并只对 ClipBridge 安装目录授予普通用户 Modify 权限。应用和后续 GitHub 自动更新仍可由普通用户运行，不需要每次更新都弹出 UAC。
