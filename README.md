@@ -1,37 +1,20 @@
 # 互传 ClipBridge
 
-## GitHub-only 发布与恢复
+当前 Windows 版本：**0.3.9**
 
-唯一仓库：[github.com/ailuo04/clipbridge](https://github.com/ailuo04/clipbridge)
+[下载安装器](https://github.com/ailuo04/clipbridge/releases/download/v0.3.9/ClipBridge-0.3.9-win-x64-Setup.exe) · [发行版与更新说明](https://github.com/ailuo04/clipbridge/releases/tag/v0.3.9)
 
-- 源码、构建脚本、测试和 GitHub Actions 都在本仓库。
-- [下载安装器与 GitHub Release](https://github.com/ailuo04/clipbridge/releases)
-- 客户端更新清单：[GitHub Raw latest-v2.json](https://raw.githubusercontent.com/ailuo04/clipbridge/master/latest-v2.json)
-- 发布手册：[tools/GitHub-Release-Runbook.md](tools/GitHub-Release-Runbook.md)
+## 更新内容
 
-以后正式发布只使用 GitHub，不再发布到 Gitee。普通用户不需要任何发布密钥；更新清单使用 RSA 签名，安装包使用 SHA-256 校验。
+GitHub-only 发布迁移版：源码、更新清单、Windows 安装包和 GitHub Actions 统一到 ailuo04/clipbridge。0.3.8 用户需要手动安装一次本版；本版之后使用 GitHub 上的新签名更新渠道自动更新。普通用户不需要发布密钥。
 
-## 0.3.8 到 0.3.9 的迁移
+## 安装与自动更新
 
-0.3.8 及更早版本仍会请求旧的 Gitee 更新地址，无法通过远程修改清单自动切换到 GitHub。因此 0.3.8 用户需要手动安装一次 0.3.9。0.3.9 内置 GitHub 更新地址和新的签名公钥，0.3.9 之后的版本会继续通过 GitHub 自动更新。
+- 0.3.8 用户需要手动安装一次 0.3.9；安装后应用会从 GitHub 获取签名更新清单，后续版本自动更新。
+- 普通用户不需要发布密钥；更新清单和安装包都会校验 SHA-256 与 RSA 签名。
+- 缺少 .NET 10 桌面运行时时，安装器从 Microsoft 官方下载、校验并请求管理员授权安装。
+- 安装器未进行 Authenticode 代码签名；Android APK 尚未发布。
 
-## 本地开发
+## 开发与发布
 
-安装 global.json 指定的 .NET SDK 10.0.403，然后运行：
-
-~~~powershell
-dotnet build ClipBridge.csproj -c Release
-pwsh ./tools/Get-BuildTools.ps1 -OutputDirectory "$env:LOCALAPPDATA/ClipBridgeBuildTools"
-~~~
-
-本地打包和验签默认不上传：
-
-~~~powershell
-pwsh ./tools/Publish-GitHub.ps1 -Version 0.3.9 -Notes '本次更新说明。' -OutputDirectory "$env:TEMP/clipbridge-release" -PrivateKeyPath "$env:USERPROFILE/.clipbridge-release-keys/clipbridge-update-private-0.3.9.pem" -InnoCompilerPath "$env:LOCALAPPDATA/ClipBridgeBuildTools/InnoSetup/ISCC.exe"
-~~~
-
-## 电脑重置后的发布恢复
-
-重新克隆本仓库即可恢复源码、测试和发布工作流。更新私钥不能由公钥恢复，必须从仓库外的两份加密备份恢复到 GitHub Actions Secret CLIPBRIDGE_UPDATE_PRIVATE_KEY；私钥不提交仓库。发布时推送 v0.3.9 形式的标签，或在 Actions 中手动运行发布工作流；工作流会在 Windows runner 上构建、签名、提交更新清单、上传 Setup.exe 和 ZIP，并创建 GitHub Release。
-
-具体规则见 [AGENTS.md](AGENTS.md)。
+源码、GitHub Actions、更新清单和发行版都在 [https://github.com/ailuo04/clipbridge](https://github.com/ailuo04/clipbridge)。发布私钥只作为 GitHub Actions Secret 使用，不进入仓库、构建产物或日志。电脑重置后重新克隆该仓库即可继续开发；私钥还必须在仓库外保留加密备份。
