@@ -14,6 +14,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+$Notes = $Notes.Replace(([char]13).ToString() + ([char]10).ToString(), ([char]10).ToString()).Replace(([char]13).ToString(), ([char]10).ToString()).TrimEnd()
 if ($Notes.Length -gt 4000) { throw '更新说明不能超过 4000 个字符。' }
 $sourceRoot = Split-Path -Parent $PSScriptRoot
 $project = Join-Path $sourceRoot 'ClipBridge.csproj'
