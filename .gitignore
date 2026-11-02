@@ -18,3 +18,9 @@ obj/
 /artifacts/
 /cloud-tools/
 __pycache__/
+
+# Android local tool paths and generated files
+android/.gradle/
+android/.kotlin/
+android/local.properties
+**/build/

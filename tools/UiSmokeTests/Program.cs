@@ -131,6 +131,9 @@ internal static class Program
         Delegate handler = Expression.Lambda(themeEvent.EventHandlerType!, Expression.Call(typeof(Program).GetMethod("OnTheme", BindingFlags.NonPublic | BindingFlags.Static)!, Expression.Convert(argument, typeof(object))), argument).Compile();
         themeEvent.AddEventHandler(form, handler);
         form.Show(); Pump(600);
+        Check(form.Controls.Find("SendClipboardButton", true).Length == 1, "manual clipboard send button exists");
+        Check(form.Controls.Find("SendFilesButton", true).Length == 1, "manual file send button exists");
+        Check(form.Controls.Find("SyncAnimatedToggle", true).Length == 0, "automatic sync toggle removed");
         CheckBrandIcon(form, app, "light");
         CheckBrandLayout(form, "normal width");
         Size originalSize = form.Size;

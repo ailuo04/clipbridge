@@ -19,3 +19,9 @@
 ## 开发与发布
 
 源码、GitHub Actions、更新清单和发行版都在 [https://github.com/ailuo04/clipbridge](https://github.com/ailuo04/clipbridge)。发布私钥只作为 GitHub Actions Secret 使用，不进入仓库、构建产物或日志。电脑重置后重新克隆该仓库即可继续开发；私钥还必须在仓库外保留加密备份。
+
+## 开发中的手动互传预览
+
+本分支新增 Android 客户端与 Windows 手动互传模式：两端主动预览并发送剪贴板、双向加密文件传输、接收确认、进度、取消、大小和 SHA-256 校验。Windows 不再监听复制事件，启动和接收请求不抢焦点，自动更新检查不自动弹窗。
+
+这属于本地预览开发，不修改上方正式版的 Release 或更新清单。安装、配对、构建和当前验证限制见 [android/README.md](android/README.md)。

@@ -2,7 +2,7 @@
   <PropertyGroup>
     <AssemblyName>ClipBridge</AssemblyName>
     <GenerateAssemblyInfo>True</GenerateAssemblyInfo>
-    <Version>0.3.10</Version>
+    <Version>0.4.0-preview.1</Version>
     <IncludeSourceRevisionInInformationalVersion>False</IncludeSourceRevisionInInformationalVersion>
     <OutputType>WinExe</OutputType>
     <UseWindowsForms>True</UseWindowsForms>

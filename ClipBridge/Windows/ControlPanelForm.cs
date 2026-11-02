@@ -82,9 +82,11 @@ internal sealed class ControlPanelForm : Form
 	// 18 px top and 24 px bottom padding, in 96-dpi logical pixels.
 	private const int NetworkSurfaceHeight = 314;
 
-	private readonly StatusBadge _syncState = new StatusBadge();
+	private readonly ModernButton _sendClipboard = new ModernButton("发送剪贴板", ButtonTone.Primary, "\ue8c8");
 
-	private readonly ModernToggle _syncToggle = new ModernToggle();
+	private readonly ModernButton _sendFiles = new ModernButton("发送文件", ButtonTone.Secondary, "\ue8b7");
+
+    private readonly ModernButton _pendingFiles = new ModernButton("传输记录", ButtonTone.Secondary);
 
 	private readonly WindowCaptionButton _minimizeButton = new WindowCaptionButton
 	{
@@ -140,7 +142,7 @@ internal sealed class ControlPanelForm : Form
 
 	private readonly ThemeSelector _themeSelector = new ThemeSelector();
 
-	private readonly Label _status = TextLabel("同步已暂停", 9f, bold: false, Ui.Muted);
+	private readonly Label _status = TextLabel("就绪 · 主动发送模式", 9f, bold: false, Ui.Muted);
 
 	private readonly ListBox _events = new ListBox();
 
@@ -177,7 +179,7 @@ internal sealed class ControlPanelForm : Form
 
 	private readonly Font _eventTimeFont = new Font("Consolas", 8.6f);
 
-	private bool _updating;
+
 
 	private string _deviceSignature = "uninitialized";
 
@@ -222,7 +224,11 @@ internal sealed class ControlPanelForm : Form
 		}
 	}
 
-	public event Action<bool>? SyncStateRequested;
+	public event Action? SendClipboardRequested;
+
+    public event Action<string[]>? SendFilesRequested;
+
+    public event Action? ReviewIncomingRequested;
 
 	public event Action? CopyKeyRequested;
 
@@ -272,11 +278,11 @@ internal sealed class ControlPanelForm : Form
 		CaptureThemeBindings(this, inHeader: false);
 		Controls.Add(_themeTransitionOverlay);
 		WireInteractions();
-		SetSyncState(enabled: false);
+		_footerSurface.SetActive(true);
 		RefreshNetworkAddresses();
 		if (emitStartupEvent)
 		{
-			AddEvent("应用已启动，同步尚未开启");
+			AddEvent("应用已启动，只有点击发送才会传输剪贴板");
 		}
 		CreateNestedHandles(this);
 		SubscribeNetworkChanges();
@@ -285,19 +291,17 @@ internal sealed class ControlPanelForm : Form
 
 	private void ConfigureControls(string pairingKey)
 	{
-		_syncState.Font = Ui.Font(8f, FontStyle.Bold);
-		_syncState.Name = "SyncStatusPill";
-		_syncState.AccessibleName = "同步状态";
-		_syncState.Size = new Size(112, 34);
-		_syncState.Margin = new Padding(0, 0, 18, 0);
-		_syncToggle.AccessibleName = "自动同步";
-		_syncToggle.Name = "SyncAnimatedToggle";
-		_syncToggle.DarkBackground = Ui.HeaderIsDark;
+        _sendClipboard.Name = "SendClipboardButton";
+        _sendClipboard.AccessibleName = "发送剪贴板";
+        _sendFiles.Name = "SendFilesButton";
+        _sendFiles.AccessibleName = "发送文件";
+        _sendClipboard.Margin = new Padding(0, 0, 8, 0);
+        _sendFiles.Margin = new Padding(0, 0, 8, 0);
+        _pendingFiles.Name = "ReviewTransfersButton";
+        _pendingFiles.Click += (_, _) => ReviewIncomingRequested?.Invoke();
 		_minimizeButton.DarkBackground = Ui.HeaderIsDark;
 		_maximizeButton.DarkBackground = Ui.HeaderIsDark;
 		_closeButton.DarkBackground = Ui.HeaderIsDark;
-		_syncToggle.Font = Ui.Font(8.8f);
-		_syncToggle.Margin = new Padding(0, 0, 14, 0);
 		_themeSelector.Name = "ThemeSelector";
 		_themeSelector.Anchor = AnchorStyles.Right;
 		_themeSelector.Margin = Padding.Empty;
@@ -360,7 +364,7 @@ internal sealed class ControlPanelForm : Form
 		};
 		_tips.SetToolTip(_copyKey, "复制配对密钥");
 		_tips.SetToolTip(_keyShell, "仅与可信设备共享");
-		_tips.SetToolTip(_syncToggle, "开启或暂停双向剪贴板同步");
+		_tips.SetToolTip(_sendClipboard, "预览后向指定设备发送当前文字");
 		_tips.SetToolTip(_addresses, "本机可用的 IPv4 局域网地址");
 		_tips.SetToolTip(_refresh, "重新读取网络地址并刷新设备");
 		_tips.SetToolTip(_remove, "移除选中的手动地址");
@@ -515,8 +519,8 @@ internal sealed class ControlPanelForm : Form
 		tableLayoutPanel3.Controls.Add(label2, 0, 1);
 		tableLayoutPanel2.Controls.Add(control, 0, 0);
 		tableLayoutPanel2.Controls.Add(tableLayoutPanel3, 1, 0);
-		_syncState.Anchor = AnchorStyles.Right;
-		_syncToggle.Anchor = AnchorStyles.Right;
+		_sendClipboard.Anchor = AnchorStyles.Right;
+		_sendFiles.Anchor = AnchorStyles.Right;
 		Panel control2 = new Panel
 		{
 			Dock = DockStyle.Fill,
@@ -528,8 +532,8 @@ internal sealed class ControlPanelForm : Form
 		_closeButton.Dock = DockStyle.Fill;
 		tableLayoutPanel.Controls.Add(tableLayoutPanel2, 0, 0);
 		tableLayoutPanel.Controls.Add(_checkUpdates, 1, 0);
-		tableLayoutPanel.Controls.Add(_syncState, 2, 0);
-		tableLayoutPanel.Controls.Add(_syncToggle, 3, 0);
+		tableLayoutPanel.Controls.Add(_sendClipboard, 2, 0);
+		tableLayoutPanel.Controls.Add(_sendFiles, 3, 0);
 		tableLayoutPanel.Controls.Add(control2, 4, 0);
 		tableLayoutPanel.Controls.Add(_minimizeButton, 5, 0);
 		tableLayoutPanel.Controls.Add(_maximizeButton, 6, 0);
@@ -665,13 +669,14 @@ internal sealed class ControlPanelForm : Form
 		{
 			Dock = DockStyle.Fill,
 			ColumnCount = 1,
-			RowCount = 3,
+			RowCount = 4,
 			Margin = Padding.Empty,
 			BackColor = Ui.SurfaceMintBody
 		};
 		tableLayoutPanel.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100f));
 		tableLayoutPanel.RowStyles.Add(new RowStyle(SizeType.Absolute, 58f));
 		tableLayoutPanel.RowStyles.Add(new RowStyle(SizeType.Percent, 100f));
+        tableLayoutPanel.RowStyles.Add(new RowStyle(SizeType.Absolute, 42f));
 		tableLayoutPanel.RowStyles.Add(new RowStyle(SizeType.Absolute, 58f));
 		TableLayoutPanel tableLayoutPanel2 = Row(Ui.SurfaceMintBody);
 		tableLayoutPanel2.ColumnCount = 6;
@@ -711,7 +716,10 @@ internal sealed class ControlPanelForm : Form
 		_remove.Anchor = AnchorStyles.Right;
 		_refresh.Margin = new Padding(0, 0, 8, 0);
 		_remove.Margin = Padding.Empty;
-		tableLayoutPanel2.Controls.Add(_refresh, 4, 0);
+		_pendingFiles.Anchor = AnchorStyles.Right;
+        _pendingFiles.Margin = new Padding(0, 0, 8, 0);
+
+        tableLayoutPanel2.Controls.Add(_refresh, 4, 0);
 		tableLayoutPanel2.Controls.Add(_remove, 5, 0);
 		Panel panel = new Panel
 		{
@@ -737,12 +745,13 @@ internal sealed class ControlPanelForm : Form
 		tableLayoutPanel3.Controls.Add(_addPeer, 1, 0);
 		tableLayoutPanel.Controls.Add(tableLayoutPanel2, 0, 0);
 		tableLayoutPanel.Controls.Add(panel, 0, 1);
-		tableLayoutPanel.Controls.Add(tableLayoutPanel3, 0, 2);
+		tableLayoutPanel.Controls.Add(_pendingFiles, 0, 2);
+        tableLayoutPanel.Controls.Add(tableLayoutPanel3, 0, 3);
 		// Hairline above the manual-IP row so it reads as a separate action area.
 		tableLayoutPanel.Paint += (object? _, PaintEventArgs e) =>
 		{
 			int[] rows = tableLayoutPanel.GetRowHeights();
-			int dividerY = tableLayoutPanel.ClientSize.Height - rows[2];
+			int dividerY = tableLayoutPanel.ClientSize.Height - rows[3];
 			using Pen divider = new Pen(Ui.Line);
 			e.Graphics.DrawLine(divider, 0, dividerY, tableLayoutPanel.ClientSize.Width, dividerY);
 		};
@@ -891,13 +900,15 @@ internal sealed class ControlPanelForm : Form
 
 	private void WireInteractions()
 	{
-		_syncToggle.CheckedChanged += (object? _, EventArgs _) =>
-		{
-			if (!_updating)
-			{
-				SyncStateRequested?.Invoke(_syncToggle.Checked);
-			}
-		};
+        _sendClipboard.Click += (_, _) => SendClipboardRequested?.Invoke();
+        _sendFiles.Click += (_, _) =>
+        {
+            using var dialog = new OpenFileDialog { Multiselect = true, Title = "选择要发送的文件" };
+            if (dialog.ShowDialog(this) == DialogResult.OK) SendFilesRequested?.Invoke(dialog.FileNames);
+        };
+        AllowDrop = true;
+        DragEnter += (_, e) => { if (e.Data?.GetDataPresent(DataFormats.FileDrop) == true) e.Effect = DragDropEffects.Copy; };
+        DragDrop += (_, e) => { if (e.Data?.GetData(DataFormats.FileDrop) is string[] paths) SendFilesRequested?.Invoke(paths); };
 		_revealKey.CheckedChanged += (object? _, EventArgs _) =>
 		{
 			_keyShell.Editor.UseSystemPasswordChar = !_revealKey.Checked;
@@ -967,14 +978,7 @@ internal sealed class ControlPanelForm : Form
 		}
 	}
 
-	public void SetSyncState(bool enabled)
-	{
-		_updating = true;
-		_syncToggle.Checked = enabled;
-		_updating = false;
-		_syncState.SetActive(enabled);
-		_footerSurface.SetActive(enabled);
-	}
+    public void SetPendingFiles(int count) => _pendingFiles.Text = count > 0 ? $"待接收 ({count})" : "传输记录";
 
 	public void ShowControlPanel()
 	{
@@ -1060,7 +1064,6 @@ internal sealed class ControlPanelForm : Form
 		Ui.ApplyTheme(targetTheme);
 		_renderedTheme = targetTheme;
 		_renderedPalette = UiPalette.Capture();
-		_syncToggle.DarkBackground = Ui.HeaderIsDark;
 		_minimizeButton.DarkBackground = Ui.HeaderIsDark;
 		_maximizeButton.DarkBackground = Ui.HeaderIsDark;
 		_closeButton.DarkBackground = Ui.HeaderIsDark;
@@ -1222,7 +1225,7 @@ internal sealed class ControlPanelForm : Form
 			_events.EndUpdate();
 		}
 		_lastEvent = ((events.Count > 0) ? events[0].Message : string.Empty);
-		_status.Text = (string.IsNullOrEmpty(_lastEvent) ? "同步已暂停" : _lastEvent);
+		_status.Text = (string.IsNullOrEmpty(_lastEvent) ? "就绪 · 主动发送模式" : _lastEvent);
 		_events.Invalidate();
 	}
 

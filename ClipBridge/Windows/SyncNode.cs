@@ -9,449 +9,201 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using System.Threading;
-using System.Threading.Channels;
 using System.Threading.Tasks;
 
 namespace ClipBridge.Windows;
 
 internal sealed class SyncNode : IDisposable
 {
-	private sealed record Peer(IPEndPoint EndPoint, DateTimeOffset LastSeen, bool Manual = false, string Name = "");
+    private sealed record Peer(IPEndPoint EndPoint, DateTimeOffset LastSeen, bool Manual = false, string Name = "");
+    private readonly byte[] _key;
+    private readonly string _pairingKeyText;
+    private readonly string _deviceId = Guid.NewGuid().ToString("N");
+    private readonly ConcurrentDictionary<string, Peer> _peers = new();
+    private readonly ConcurrentDictionary<string, long> _seenMessages = new();
+    private readonly CancellationTokenSource _stop = new();
+    private readonly SemaphoreSlim _connections = new(4);
+    private readonly TcpListener _tcpListener;
+    private readonly UdpClient _udp;
+    private readonly Action<Action> _dispatchToUi;
+    private bool _disposed;
+    public int Port => ((IPEndPoint)_tcpListener.LocalEndpoint).Port;
+    public event Action<string>? RemoteTextReceived;
+    public event Action<string>? StatusChanged;
 
-	private readonly byte[] _key;
+    public SyncNode(byte[] pairingKey, Action<Action> dispatchToUi, int textPort = SharedProtocol.TcpPort, bool discovery = true)
+    {
+        _key = SharedProtocol.DeriveKey(pairingKey);
+        _pairingKeyText = Convert.ToHexString(pairingKey);
+        _dispatchToUi = dispatchToUi;
+        _tcpListener = new TcpListener(IPAddress.Any, textPort);
+        _udp = new UdpClient(AddressFamily.InterNetwork);
+        try
+        {
+            _udp.EnableBroadcast = true;
+            _udp.Client.Bind(new IPEndPoint(IPAddress.Any, discovery ? SharedProtocol.DiscoveryPort : 0));
+            _tcpListener.Start(8);
+        }
+        catch { _udp.Dispose(); _tcpListener.Stop(); throw; }
+        if (discovery) { _ = ReceiveAnnouncementsAsync(_stop.Token); _ = AnnounceLoopAsync(_stop.Token); }
+        _ = AcceptLoopAsync(_stop.Token);
+    }
 
-	private readonly string _pairingKeyText;
+    public void AddManualPeer(IPAddress address)
+    {
+        if (!SharedProtocol.IsLocalAddress(address)) throw new ArgumentException("Only local IPv4 addresses are allowed.");
+        string id = "manual:" + address;
+        if (_peers.Count >= 32 && !_peers.ContainsKey(id)) throw new InvalidOperationException("Too many peers.");
+        _peers[id] = new Peer(new IPEndPoint(address, SharedProtocol.TcpPort), DateTimeOffset.MinValue, true);
+        Report("已添加手动设备地址");
+    }
 
-	private readonly string _deviceId = Guid.NewGuid().ToString("N");
+    public void RemoveManualPeer(IPAddress address)
+    {
+        if (_peers.TryRemove("manual:" + address, out _)) Report("已移除手动设备地址");
+    }
 
-	private readonly ConcurrentDictionary<string, Peer> _peers = new ConcurrentDictionary<string, Peer>();
+    public PeerSnapshot[] GetPeerSnapshots()
+    {
+        var now = DateTimeOffset.UtcNow;
+        return _peers.Values.ToArray().GroupBy(p => p.EndPoint).Select(group =>
+        {
+            Peer? peer = group.Where(p => !p.Manual).OrderByDescending(p => p.LastSeen).FirstOrDefault();
+            bool manual = group.Any(p => p.Manual);
+            bool online = peer != null && now - peer.LastSeen <= TimeSpan.FromSeconds(15);
+            return new PeerSnapshot(!string.IsNullOrWhiteSpace(peer?.Name) ? peer.Name : "手动设备", group.Key.Address.ToString(), group.Key.Port, manual, online, peer?.LastSeen);
+        }).OrderByDescending(p => p.RecentlySeen).ThenBy(p => p.Address, StringComparer.Ordinal).ToArray();
+    }
 
-	private readonly ConcurrentDictionary<string, long> _seenMessages = new ConcurrentDictionary<string, long>();
+    public async Task<bool> SendTextAsync(IPAddress address, string text, CancellationToken token, int port = SharedProtocol.TcpPort)
+    {
+        if (!SharedProtocol.IsLocalAddress(address)) throw new ArgumentException("请输入局域网 IPv4 地址");
+        if (string.IsNullOrEmpty(text)) throw new ArgumentException("剪贴板没有纯文本");
+        if (Encoding.UTF8.GetByteCount(text) > SharedProtocol.MaxTextBytes) throw new ArgumentException("文本超过 256 KiB");
+        if (string.Equals(text.Trim(), _pairingKeyText, StringComparison.OrdinalIgnoreCase)) throw new ArgumentException("不能发送配对密钥");
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(token, _stop.Token);
+        deadline.CancelAfter(TimeSpan.FromSeconds(5));
+        try
+        {
+            using var client = new TcpClient(AddressFamily.InterNetwork);
+            await client.ConnectAsync(address, port, deadline.Token);
+            var message = new ClipboardMessage("clipboard", Guid.NewGuid().ToString("N"), _deviceId, text, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
+            byte[] frame = SharedProtocol.Frame(SharedProtocol.Encrypt(_key, SharedProtocol.Serialize(message)));
+            await client.GetStream().WriteAsync(frame, deadline.Token);
+            Report("文字已发送，接收结果请在目标设备确认");
+            return true;
+        }
+        catch (OperationCanceledException) when (token.IsCancellationRequested || _stop.IsCancellationRequested) { throw; }
+        catch (Exception ex) when (ex is IOException || ex is SocketException || ex is OperationCanceledException)
+        { Report("文字发送失败，请检查设备、网络和防火墙"); return false; }
+    }
 
-	private readonly CancellationTokenSource _stop = new CancellationTokenSource();
+    private byte[] AnnouncementBytes() => SharedProtocol.Encrypt(_key, SharedProtocol.Serialize(new Announcement("announce", _deviceId, Environment.MachineName, SharedProtocol.TcpPort, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds())));
 
-	private readonly SemaphoreSlim _connections = new SemaphoreSlim(4);
+    private async Task AnnounceLoopAsync(CancellationToken token)
+    {
+        try
+        {
+            while (!token.IsCancellationRequested)
+            {
+                try
+                {
+                    byte[] bytes = AnnouncementBytes();
+                    await _udp.SendAsync(bytes, new IPEndPoint(IPAddress.Broadcast, SharedProtocol.DiscoveryPort), token);
+                    foreach (var item in _peers.ToArray())
+                    {
+                        if (item.Value.Manual) await _udp.SendAsync(bytes, new IPEndPoint(item.Value.EndPoint.Address, SharedProtocol.DiscoveryPort), token);
+                        else if (DateTimeOffset.UtcNow - item.Value.LastSeen > TimeSpan.FromSeconds(15)) _peers.TryRemove(item.Key, out _);
+                    }
+                }
+                catch (SocketException) { Report("网络发现暂不可用，可通过手动 IP 发送"); }
+                await Task.Delay(3000, token);
+            }
+        }
+        catch (OperationCanceledException) { }
+        catch (ObjectDisposedException) { }
+    }
 
-	private readonly Channel<ClipboardMessage> _outbound = Channel.CreateBounded<ClipboardMessage>(new BoundedChannelOptions(1)
-	{
-		FullMode = BoundedChannelFullMode.DropOldest,
-		SingleReader = true
-	});
+    private async Task ReceiveAnnouncementsAsync(CancellationToken token)
+    {
+        try
+        {
+            while (!token.IsCancellationRequested)
+            {
+                try
+                {
+                    var result = await _udp.ReceiveAsync(token);
+                    if (result.Buffer.Length < 28 || result.Buffer.Length > 4096 || !SharedProtocol.IsLocalAddress(result.RemoteEndPoint.Address)) continue;
+                    var a = JsonSerializer.Deserialize<Announcement>(SharedProtocol.Decrypt(_key, result.Buffer));
+                    if (a == null || a.Type != "announce" || a.DeviceId == _deviceId || string.IsNullOrEmpty(a.DeviceId) || a.DeviceId.Length > 64 || a.Port != SharedProtocol.TcpPort || !SharedProtocol.IsFresh(a.TimestampUtc)) continue;
+                    bool added = !_peers.ContainsKey(a.DeviceId);
+                    if (added && _peers.Count >= 32) continue;
+                    string name = a.Name ?? "同密钥设备";
+                    _peers[a.DeviceId] = new Peer(new IPEndPoint(result.RemoteEndPoint.Address, a.Port), DateTimeOffset.UtcNow, false, name.Substring(0, Math.Min(name.Length, 80)));
+                    if (added) { Report("已发现配对设备"); await _udp.SendAsync(AnnouncementBytes(), result.RemoteEndPoint, token); }
+                }
+                catch (CryptographicException) { }
+                catch (JsonException) { }
+                catch (IOException) { }
+                catch (SocketException) { await Task.Delay(1000, token); }
+            }
+        }
+        catch (OperationCanceledException) { }
+        catch (ObjectDisposedException) { }
+    }
 
-	private readonly TcpListener _tcpListener;
+    private async Task AcceptLoopAsync(CancellationToken token)
+    {
+        try
+        {
+            while (!token.IsCancellationRequested)
+            {
+                var client = await _tcpListener.AcceptTcpClientAsync(token);
+                if (client.Client.RemoteEndPoint is not IPEndPoint peer || !SharedProtocol.IsLocalAddress(peer.Address) || !_connections.Wait(0)) client.Dispose();
+                else _ = HandleClientAsync(client, token);
+            }
+        }
+        catch (OperationCanceledException) { }
+        catch (ObjectDisposedException) { }
+        catch (SocketException) { if (!token.IsCancellationRequested) Report("文字接收服务已停止，请重启应用"); }
+    }
 
-	private readonly UdpClient _udp;
+    private async Task HandleClientAsync(TcpClient client, CancellationToken token)
+    {
+        using (client)
+        using (var deadline = CancellationTokenSource.CreateLinkedTokenSource(token))
+        {
+            deadline.CancelAfter(5000);
+            try
+            {
+                var stream = client.GetStream();
+                byte[] header = new byte[4];
+                await stream.ReadExactlyAsync(header, deadline.Token);
+                int size = SharedProtocol.ReadFrameLength(header);
+                if (size < 28 || size > SharedProtocol.MaxFrameBytes) return;
+                byte[] frame = new byte[size];
+                await stream.ReadExactlyAsync(frame, deadline.Token);
+                var m = JsonSerializer.Deserialize<ClipboardMessage>(SharedProtocol.Decrypt(_key, frame));
+                if (m == null || m.Type != "clipboard" || m.OriginDeviceId == _deviceId || string.IsNullOrEmpty(m.MessageId) || m.MessageId.Length > 64 || string.IsNullOrEmpty(m.OriginDeviceId) || m.OriginDeviceId.Length > 64 || string.IsNullOrEmpty(m.Text) || Encoding.UTF8.GetByteCount(m.Text) > SharedProtocol.MaxTextBytes || !SharedProtocol.IsFresh(m.TimestampUtc) || string.Equals(m.Text.Trim(), _pairingKeyText, StringComparison.OrdinalIgnoreCase) || !RememberMessage(m.MessageId)) return;
+                _dispatchToUi(() => { if (!_disposed) RemoteTextReceived?.Invoke(m.Text); });
+            }
+            catch (Exception ex) when (ex is IOException || ex is SocketException || ex is CryptographicException || ex is JsonException || ex is OperationCanceledException)
+            { if (!token.IsCancellationRequested) Report("一条文字未能接收，请检查配对和网络"); }
+            finally { _connections.Release(); }
+        }
+    }
 
-	private readonly Action<Action> _dispatchToUi;
-
-	private readonly object _clipboardLock = new object();
-
-	private string? _lastClipboardHash;
-
-	private volatile bool _enabled;
-
-	private bool _disposed;
-
-	public bool Enabled => _enabled;
-
-	public event Action<string>? RemoteTextReceived;
-
-	public event Action<string>? StatusChanged;
-
-	public SyncNode(byte[] pairingKey, Action<Action> dispatchToUi)
-	{
-		_key = SharedProtocol.DeriveKey(pairingKey);
-		_pairingKeyText = Convert.ToHexString(pairingKey);
-		_dispatchToUi = dispatchToUi;
-		_tcpListener = new TcpListener(IPAddress.Any, 45822);
-		_udp = new UdpClient(AddressFamily.InterNetwork);
-		try
-		{
-			_udp.EnableBroadcast = true;
-			_udp.Client.Bind(new IPEndPoint(IPAddress.Any, 45821));
-			_tcpListener.Start(8);
-		}
-		catch
-		{
-			_udp.Dispose();
-			_tcpListener.Stop();
-			throw;
-		}
-		ReceiveAnnouncementsAsync(_stop.Token);
-		AnnounceLoopAsync(_stop.Token);
-		AcceptLoopAsync(_stop.Token);
-		SendLoopAsync(_stop.Token);
-	}
-
-	public void SetEnabled(bool enabled)
-	{
-		_enabled = enabled;
-		lock (_clipboardLock)
-		{
-			_lastClipboardHash = null;
-		}
-		Report(enabled ? "同步已开启，等待新复制内容" : "同步已暂停");
-	}
-
-	public void AddManualPeer(IPAddress address)
-	{
-		if (!SharedProtocol.IsLocalAddress(address))
-		{
-			throw new ArgumentException("Only local IPv4 addresses are allowed.");
-		}
-		string key = "manual:" + address;
-		if (_peers.Count >= 32 && !_peers.ContainsKey(key))
-		{
-			throw new InvalidOperationException("Too many peers.");
-		}
-		_peers[key] = new Peer(new IPEndPoint(address, 45822), DateTimeOffset.MinValue, Manual: true);
-		Report("已添加手动设备地址");
-	}
-
-	public void RemoveManualPeer(IPAddress address)
-	{
-		if (_peers.TryRemove("manual:" + address, out Peer _))
-		{
-			Report("已移除手动设备地址");
-		}
-	}
-
-	public PeerSnapshot[] GetPeerSnapshots()
-	{
-		DateTimeOffset now = DateTimeOffset.UtcNow;
-		return (from peer in (from peer in _peers.Values.ToArray()
-				group peer by peer.EndPoint).Select((IGrouping<IPEndPoint, Peer> @group) =>
-			{
-				Peer peer = (from peer2 in @group
-					where !peer2.Manual
-					orderby peer2.LastSeen descending
-					select peer2).FirstOrDefault();
-				bool flag = @group.Any((Peer peer2) => peer2.Manual);
-				bool recentlySeen = (object)peer != null && now - peer.LastSeen <= TimeSpan.FromSeconds(15.0);
-				string name = ((!string.IsNullOrWhiteSpace(peer?.Name)) ? peer.Name : (flag ? "手动设备" : "同密钥设备"));
-				return new PeerSnapshot(name, @group.Key.Address.ToString(), @group.Key.Port, flag, recentlySeen, peer?.LastSeen);
-			})
-			orderby peer.RecentlySeen descending
-			select peer).ThenBy((PeerSnapshot peer) => peer.Address, StringComparer.Ordinal).ToArray();
-	}
-
-	public void MarkRemoteTextApplied(string text)
-	{
-		lock (_clipboardLock)
-		{
-			_lastClipboardHash = Hash(text);
-		}
-	}
-
-	public void OnLocalClipboardTextChanged(string text)
-	{
-		if (!_enabled)
-		{
-			return;
-		}
-		if (text.Length == 0)
-		{
-			lock (_clipboardLock)
-			{
-				_lastClipboardHash = null;
-				return;
-			}
-		}
-		if (Encoding.UTF8.GetByteCount(text) > 262144)
-		{
-			Report("文本超过 256 KiB，未同步");
-		}
-		else
-		{
-			if (string.Equals(text.Trim(), _pairingKeyText, StringComparison.OrdinalIgnoreCase))
-			{
-				return;
-			}
-			string text2 = Hash(text);
-			lock (_clipboardLock)
-			{
-				if (text2 == _lastClipboardHash)
-				{
-					return;
-				}
-				_lastClipboardHash = text2;
-			}
-			_outbound.Writer.TryWrite(new ClipboardMessage("clipboard", Guid.NewGuid().ToString("N"), _deviceId, text, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()));
-		}
-	}
-
-	private byte[] AnnouncementBytes()
-	{
-		return SharedProtocol.Encrypt(_key, SharedProtocol.Serialize(new Announcement("announce", _deviceId, Environment.MachineName, 45822, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds())));
-	}
-
-	private async Task AnnounceLoopAsync(CancellationToken token)
-	{
-		_ = 2;
-		try
-		{
-			while (!token.IsCancellationRequested)
-			{
-				try
-				{
-					byte[] bytes = AnnouncementBytes();
-					await _udp.SendAsync(bytes, new IPEndPoint(IPAddress.Broadcast, 45821), token);
-					KeyValuePair<string, Peer>[] array = _peers.ToArray();
-					for (int i = 0; i < array.Length; i++)
-					{
-						KeyValuePair<string, Peer> keyValuePair = array[i];
-						if (keyValuePair.Value.Manual)
-						{
-							await _udp.SendAsync(bytes, new IPEndPoint(keyValuePair.Value.EndPoint.Address, 45821), token);
-						}
-						else if (DateTimeOffset.UtcNow - keyValuePair.Value.LastSeen > TimeSpan.FromSeconds(15.0))
-						{
-							_peers.TryRemove(keyValuePair.Key, out Peer _);
-						}
-					}
-				}
-				catch (SocketException)
-				{
-					Report("网络发现暂不可用，正在重试");
-				}
-				await Task.Delay(3000, token);
-			}
-		}
-		catch (OperationCanceledException)
-		{
-		}
-		catch (ObjectDisposedException)
-		{
-		}
-	}
-
-	private async Task ReceiveAnnouncementsAsync(CancellationToken token)
-	{
-		_ = 2;
-		try
-		{
-			while (!token.IsCancellationRequested)
-			{
-				try
-				{
-					UdpReceiveResult udpReceiveResult = await _udp.ReceiveAsync(token);
-					int num = udpReceiveResult.Buffer.Length;
-					bool flag = ((num < 28 || num > 4096) ? true : false);
-					if (flag || !SharedProtocol.IsLocalAddress(udpReceiveResult.RemoteEndPoint.Address))
-					{
-						continue;
-					}
-					Announcement announcement = JsonSerializer.Deserialize<Announcement>(SharedProtocol.Decrypt(_key, udpReceiveResult.Buffer));
-					if ((object)announcement == null || announcement.Type != "announce" || announcement.DeviceId == _deviceId || string.IsNullOrEmpty(announcement.DeviceId) || announcement.DeviceId.Length > 64 || announcement.Port != 45822 || !SharedProtocol.IsFresh(announcement.TimestampUtc))
-					{
-						continue;
-					}
-					bool flag2 = !_peers.ContainsKey(announcement.DeviceId);
-					if (!flag2 || _peers.Count < 32)
-					{
-						_peers[announcement.DeviceId] = new Peer(new IPEndPoint(udpReceiveResult.RemoteEndPoint.Address, announcement.Port), DateTimeOffset.UtcNow, Manual: false, (announcement.Name ?? "同密钥设备").Substring(0, Math.Min((announcement.Name ?? "同密钥设备").Length, 80)));
-						if (flag2)
-						{
-							Report("已发现同密钥设备");
-							await _udp.SendAsync(AnnouncementBytes(), udpReceiveResult.RemoteEndPoint, token);
-						}
-					}
-				}
-				catch (CryptographicException)
-				{
-				}
-				catch (JsonException)
-				{
-				}
-				catch (SocketException)
-				{
-					Report("设备发现连接中断，正在重试");
-					await Task.Delay(1000, token);
-				}
-			}
-		}
-		catch (OperationCanceledException)
-		{
-		}
-		catch (ObjectDisposedException)
-		{
-		}
-	}
-
-	private async Task AcceptLoopAsync(CancellationToken token)
-	{
-		try
-		{
-			while (!token.IsCancellationRequested)
-			{
-				TcpClient tcpClient = await _tcpListener.AcceptTcpClientAsync(token);
-				if (!(tcpClient.Client.RemoteEndPoint is IPEndPoint iPEndPoint) || !SharedProtocol.IsLocalAddress(iPEndPoint.Address) || !_connections.Wait(0))
-				{
-					tcpClient.Dispose();
-				}
-				else
-				{
-					HandleClientAsync(tcpClient, token);
-				}
-			}
-		}
-		catch (OperationCanceledException)
-		{
-		}
-		catch (ObjectDisposedException)
-		{
-		}
-		catch (SocketException)
-		{
-			if (!token.IsCancellationRequested)
-			{
-				Report("接收服务已停止，请重启应用");
-			}
-		}
-	}
-
-	private async Task HandleClientAsync(TcpClient client, CancellationToken token)
-	{
-		using (client)
-		{
-			using CancellationTokenSource deadline = CancellationTokenSource.CreateLinkedTokenSource(token);
-			_ = 1;
-			try
-			{
-				deadline.CancelAfter(5000);
-				NetworkStream stream = client.GetStream();
-				byte[] header = new byte[4];
-				await stream.ReadExactlyAsync(header, deadline.Token);
-				int num = SharedProtocol.ReadFrameLength(header);
-				if ((num < 28 || num > 1581056) ? true : false)
-				{
-					return;
-				}
-				byte[] frame = new byte[num];
-				await stream.ReadExactlyAsync(frame, deadline.Token);
-				ClipboardMessage message = JsonSerializer.Deserialize<ClipboardMessage>(SharedProtocol.Decrypt(_key, frame));
-				if (!_enabled || (object)message == null || message.Type != "clipboard" || message.OriginDeviceId == _deviceId || string.IsNullOrEmpty(message.MessageId) || message.MessageId.Length > 64 || string.IsNullOrEmpty(message.OriginDeviceId) || message.OriginDeviceId.Length > 64 || string.IsNullOrEmpty(message.Text) || Encoding.UTF8.GetByteCount(message.Text) > 262144 || !SharedProtocol.IsFresh(message.TimestampUtc) || !RememberMessage(message.MessageId))
-				{
-					return;
-				}
-				_dispatchToUi(() =>
-				{
-					if (_enabled && !_disposed)
-					{
-						RemoteTextReceived?.Invoke(message.Text);
-					}
-				});
-			}
-			catch (Exception ex) when ((ex is IOException || ex is SocketException || ex is CryptographicException || ex is JsonException || ex is OperationCanceledException) ? true : false)
-			{
-				if (!token.IsCancellationRequested)
-				{
-					Report("一条消息未能接收，请检查配对和网络");
-				}
-			}
-			finally
-			{
-				_connections.Release();
-			}
-		}
-	}
-
-	private async Task SendLoopAsync(CancellationToken token)
-	{
-		try
-		{
-			await foreach (ClipboardMessage message in _outbound.Reader.ReadAllAsync(token))
-			{
-				if (!_enabled || !SharedProtocol.IsFresh(message.TimestampUtc))
-				{
-					continue;
-				}
-				IPEndPoint[] array = (from p in _peers.Values
-					where p.Manual || DateTimeOffset.UtcNow - p.LastSeen <= TimeSpan.FromSeconds(15.0)
-					select p.EndPoint).Distinct().ToArray();
-				if (array.Length == 0)
-				{
-					Report("未发现设备，本次内容未发送");
-					continue;
-				}
-				int num = (await Task.WhenAll(array.Select((IPEndPoint endpoint) => SendAsync(endpoint, message, token)))).Count((bool ok) => ok);
-				Report((num > 0) ? $"已发送至 {num} 个设备地址" : "发送失败，请检查网络和防火墙");
-			}
-		}
-		catch (OperationCanceledException)
-		{
-		}
-	}
-
-	private async Task<bool> SendAsync(IPEndPoint endpoint, ClipboardMessage message, CancellationToken token)
-	{
-		using CancellationTokenSource deadline = CancellationTokenSource.CreateLinkedTokenSource(token);
-		deadline.CancelAfter(4000);
-		try
-		{
-			if (!_enabled)
-			{
-				return false;
-			}
-			using TcpClient client = new TcpClient(AddressFamily.InterNetwork);
-			await client.ConnectAsync(endpoint, deadline.Token);
-			if (!_enabled)
-			{
-				return false;
-			}
-			byte[] array = SharedProtocol.Frame(SharedProtocol.Encrypt(_key, SharedProtocol.Serialize(message)));
-			await client.GetStream().WriteAsync(array, deadline.Token);
-			return true;
-		}
-		catch (Exception ex) when ((ex is IOException || ex is SocketException || ex is OperationCanceledException) ? true : false)
-		{
-			return false;
-		}
-	}
-
-	private bool RememberMessage(string messageId)
-	{
-		long num = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
-		foreach (KeyValuePair<string, long> seenMessage in _seenMessages)
-		{
-			if (num - seenMessage.Value > 600000)
-			{
-				_seenMessages.TryRemove(seenMessage.Key, out var _);
-			}
-		}
-		if (_seenMessages.Count < 2048)
-		{
-			return _seenMessages.TryAdd(messageId, num);
-		}
-		return false;
-	}
-
-	private void Report(string status)
-	{
-		_dispatchToUi(() =>
-		{
-			if (!_disposed)
-			{
-				StatusChanged?.Invoke(status);
-			}
-		});
-	}
-
-	private static string Hash(string text)
-	{
-		return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(text)));
-	}
-
-	public void Dispose()
-	{
-		if (!_disposed)
-		{
-			_disposed = true;
-			_enabled = false;
-			_outbound.Writer.TryComplete();
-			_stop.Cancel();
-			_tcpListener.Stop();
-			_udp.Dispose();
-		}
-	}
+    private bool RememberMessage(string id)
+    {
+        long now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        foreach (var item in _seenMessages) if (now - item.Value > 600000) _seenMessages.TryRemove(item.Key, out _);
+        return _seenMessages.Count < 2048 && _seenMessages.TryAdd(id, now);
+    }
+    private void Report(string message) => _dispatchToUi(() => { if (!_disposed) StatusChanged?.Invoke(message); });
+    public void Dispose()
+    {
+        if (_disposed) return;
+        _disposed = true; _stop.Cancel(); _tcpListener.Stop(); _udp.Dispose();
+    }
 }

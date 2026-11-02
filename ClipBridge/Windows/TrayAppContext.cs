@@ -1,6 +1,9 @@
 using System;
 using System.Collections.Generic;
 using System.Drawing;
+using System.IO;
+using System.Linq;
+using System.Collections.Concurrent;
 using System.Net;
 using System.Runtime.InteropServices;
 using System.Threading;
@@ -19,11 +22,16 @@ internal sealed class TrayAppContext : ApplicationContext
 
 	private readonly SyncNode _node;
 
-	private readonly WindowsClipboardListener _clipboardListener;
+	private readonly FileTransferNode _files;
+    private readonly string _receiveDirectory = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "Downloads", "ClipBridge");
+    private sealed record PendingFile(FileOffer Offer, IPAddress Address, TaskCompletionSource<bool> Reply);
+    private readonly ConcurrentDictionary<string, PendingFile> _pending = new();
+    private readonly ConcurrentDictionary<string, TransferProgress> _transfers = new();
+    private TransfersForm? _transfersForm;
 
 	private ControlPanelForm _panel;
 
-	private readonly ToolStripMenuItem _syncMenu;
+
 
 	private readonly ToolStripMenuItem _statusMenu;
 
@@ -46,7 +54,7 @@ internal sealed class TrayAppContext : ApplicationContext
 
 	private readonly SystemThemeWatcher _systemThemeWatcher;
 
-	private bool _enabled;
+
 
 	private bool _exiting;
 
@@ -70,7 +78,9 @@ internal sealed class TrayAppContext : ApplicationContext
 		_pairingKey = ProtectedKeyStore.LoadOrCreate();
 		_node = new SyncNode(_pairingKey, Dispatch);
 		_panel = CreatePanel(Convert.ToHexString(_pairingKey));
-		_clipboardListener = new WindowsClipboardListener(_node.OnLocalClipboardTextChanged, () => _enabled);
+		_files = new FileTransferNode(_pairingKey, _receiveDirectory, QueueFileRequestAsync);
+        _files.Progress += progress => { _transfers[progress.TransferId] = progress; };
+        _files.StatusChanged += status => Dispatch(() => ReportStatus(status));
 		_trayMenu = new ContextMenuStrip
 		{
 			ShowImageMargin = false
@@ -79,11 +89,9 @@ internal sealed class TrayAppContext : ApplicationContext
 		{
 			_panel.ShowControlPanel();
 		});
-		_syncMenu = new ToolStripMenuItem("开启剪贴板同步", null, (object? _, EventArgs _) =>
-		{
-			SetSyncEnabled(!_enabled);
-		});
-		_trayMenu.Items.Add(_syncMenu);
+        _trayMenu.Items.Add("发送当前剪贴板", null, async (_, _) => await PreviewClipboardAsync());
+        _trayMenu.Items.Add("发送文件", null, (_, _) => ChooseFiles());
+        _trayMenu.Items.Add("文件请求与传输记录", null, (_, _) => OpenTransfers());
 		_trayMenu.Items.Add("配对密钥", null, (object? _, EventArgs _) =>
 		{
 			_panel.FocusPairing();
@@ -92,7 +100,7 @@ internal sealed class TrayAppContext : ApplicationContext
 		{
 			_panel.FocusManualPeer();
 		});
-		_statusMenu = new ToolStripMenuItem("同步已暂停")
+		_statusMenu = new ToolStripMenuItem("就绪 · 主动发送模式")
 		{
 			Enabled = false
 		};
@@ -105,7 +113,7 @@ internal sealed class TrayAppContext : ApplicationContext
 		ApplyThemeToTrayMenu();
 		_trayIcon = new NotifyIcon
 		{
-			Text = "ClipBridge · 已暂停",
+			Text = "ClipBridge · 主动发送",
 			Icon = AppIcon.Load(),
 			ContextMenuStrip = _trayMenu,
 			Visible = true
@@ -116,10 +124,6 @@ internal sealed class TrayAppContext : ApplicationContext
 		};
 		_node.RemoteTextReceived += SetClipboardText;
 		_node.StatusChanged += ReportStatus;
-		_clipboardListener.ReadFailed += () =>
-		{
-			ReportStatus("剪贴板持续被占用，请重新复制");
-		};
 		_themeController.ThemeChanged += OnThemeChanged;
 		_refreshTimer.Tick += (object? _, EventArgs _) =>
 		{
@@ -128,27 +132,29 @@ internal sealed class TrayAppContext : ApplicationContext
 		_refreshTimer.Start();
 		_updateTimer = UpdateCheckScheduler.Start(() =>
 		{
-			CheckForUpdatesAsync(manual: false);
+			_ = CheckForUpdatesAsync(manual: false);
 		});
 		_activationWait = ThreadPool.RegisterWaitForSingleObject(activation, (object? _, bool _) =>
 		{
 			Dispatch(_panel.ShowControlPanel);
 		}, null, -1, executeOnlyOnce: false);
 		RefreshPanel();
-		_panel.ShowControlPanel();
+
 	}
 
 	private ControlPanelForm CreatePanel(string pairingKey, bool emitStartupEvent = true)
 	{
 		ControlPanelForm controlPanelForm = new ControlPanelForm(pairingKey, _themeController.Mode, emitStartupEvent);
-		controlPanelForm.SyncStateRequested += SetSyncEnabled;
+		controlPanelForm.SendClipboardRequested += async () => await PreviewClipboardAsync();
+        controlPanelForm.SendFilesRequested += ShowFileSend;
+        controlPanelForm.ReviewIncomingRequested += OpenTransfers;
 		controlPanelForm.CopyKeyRequested += CopyPairingKey;
 		controlPanelForm.AddPeerRequested += AddManualPeer;
 		controlPanelForm.RemovePeerRequested += RemoveManualPeer;
 		controlPanelForm.RefreshRequested += RefreshPanel;
 		controlPanelForm.CheckUpdateRequested += () =>
 		{
-			CheckForUpdatesAsync(manual: true);
+			_ = CheckForUpdatesAsync(manual: true);
 		};
 		controlPanelForm.ThemeChangeRequested += ChangeTheme;
 		controlPanelForm.FormClosed += OnPanelFormClosed;
@@ -228,6 +234,9 @@ internal sealed class TrayAppContext : ApplicationContext
 		if (!_exiting)
 		{
 			_panel.UpdatePeers(_node.GetPeerSnapshots());
+            _panel.SetPendingFiles(_pending.Count);
+            _trayIcon.Text = _pending.IsEmpty ? "ClipBridge · 主动发送" : $"ClipBridge · {_pending.Count} 个待接收请求";
+            UpdateTransfers();
 		}
 	}
 
@@ -257,7 +266,8 @@ internal sealed class TrayAppContext : ApplicationContext
 					}
 					else
 					{
-						PromptForUpdate(update);
+						if (manual) PromptForUpdate(update);
+                        else ReportStatus("发现新版本 " + update.Version + "，可在控制面板主动检查更新");
 					}
 				}
 			});
@@ -297,7 +307,7 @@ internal sealed class TrayAppContext : ApplicationContext
 		_panel.ShowControlPanel();
 		if (MessageBox.Show(_panel, "发现新版本 " + update.Version + "。\n\n" + text + "\n\n是否下载并自动安装？应用会重启一次。", "发现更新", MessageBoxButtons.YesNo, MessageBoxIcon.Asterisk) == DialogResult.Yes)
 		{
-			DownloadAndInstallUpdateAsync(update);
+			_ = DownloadAndInstallUpdateAsync(update);
 		}
 	}
 
@@ -350,32 +360,71 @@ internal sealed class TrayAppContext : ApplicationContext
 		}
 	}
 
-	private void SetSyncEnabled(bool enabled)
-	{
-		if (_enabled == enabled)
-		{
-			return;
-		}
-		if (enabled)
-		{
-			_panel.ShowControlPanel();
-			if (MessageBox.Show(_panel, "开启后将自动读取新复制的纯文本，并与持有相同密钥的设备双向同步。文本可能包含密码或验证码，不能保证自动识别敏感内容。配对密钥不会被自动同步。可随时在面板或托盘中暂停。是否开启？", "开启剪贴板同步", MessageBoxButtons.YesNo, MessageBoxIcon.Asterisk) != DialogResult.Yes)
-			{
-				_panel.SetSyncState(enabled: false);
-				return;
-			}
-		}
-		_enabled = enabled;
-		_node.SetEnabled(enabled);
-		_panel.SetSyncState(enabled);
-		_syncMenu.Text = (enabled ? "暂停剪贴板同步" : "开启剪贴板同步");
-		_trayIcon.Text = (enabled ? "ClipBridge · 同步中" : "ClipBridge · 已暂停");
-	}
+    private async Task PreviewClipboardAsync()
+    {
+        string text = "";
+        for (int i = 0; i < 6; i++)
+        {
+            try { text = Clipboard.ContainsText(TextDataFormat.UnicodeText) ? Clipboard.GetText(TextDataFormat.UnicodeText) : ""; break; }
+            catch (ExternalException) { if (i == 5) { ReportStatus("剪贴板正忙，请稍后重试"); return; } await Task.Delay(50); }
+        }
+        if (string.IsNullOrEmpty(text)) { ReportStatus("剪贴板没有纯文本"); return; }
+        if (string.Equals(text.Trim(), Convert.ToHexString(_pairingKey), StringComparison.OrdinalIgnoreCase)) { ReportStatus("不能发送配对密钥"); return; }
+        if (System.Text.Encoding.UTF8.GetByteCount(text) > SharedProtocol.MaxTextBytes) { ReportStatus("文本超过 256 KiB"); return; }
+        string captured = text;
+        var window = new ManualSendForm(_node.GetPeerSnapshots(), "发送剪贴板 · " + System.Text.Encoding.UTF8.GetByteCount(text) + " 字节", text, async (address, token) =>
+        { if (!await _node.SendTextAsync(address, captured, token)) throw new IOException("发送失败，请检查目标设备和网络"); });
+        window.Show(_panel);
+    }
+
+    private void ChooseFiles()
+    {
+        using var dialog = new OpenFileDialog { Multiselect = true, Title = "选择要发送的文件" };
+        if (dialog.ShowDialog(_panel) == DialogResult.OK) ShowFileSend(dialog.FileNames);
+    }
+
+    private void ShowFileSend(string[] paths)
+    {
+        if (paths.Length == 0 || paths.Length > 256 || paths.Any(path => !File.Exists(path))) { ReportStatus("请选择 1 至 256 个普通文件，暂不支持文件夹"); return; }
+        var window = new ManualSendForm(_node.GetPeerSnapshots(), "发送文件", string.Join(Environment.NewLine, paths.Select(Path.GetFileName)), (address, token) => _files.SendAsync(address, paths, token));
+        window.Show(_panel);
+    }
+
+    private async Task<bool> QueueFileRequestAsync(FileOffer offer, IPAddress address, CancellationToken token)
+    {
+        var reply = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        _pending[offer.TransferId] = new PendingFile(offer, address, reply);
+        using var registration = token.Register(() => reply.TrySetCanceled(token));
+        try { return await reply.Task; }
+        finally { _pending.TryRemove(offer.TransferId, out _); }
+    }
+
+    private void OpenTransfers()
+    {
+        if (_transfersForm == null || _transfersForm.IsDisposed)
+        {
+            _transfersForm = new TransfersForm(_receiveDirectory);
+            _transfersForm.Decision += (id, accept) => { if (_pending.TryGetValue(id, out var pending)) pending.Reply.TrySetResult(accept); };
+            _transfersForm.CancelTransfer += id => _files.Cancel(id);
+        }
+        UpdateTransfers();
+        _transfersForm.Show(_panel);
+        _transfersForm.Activate();
+    }
+
+    private void UpdateTransfers()
+    {
+        if (_transfers.Count > 200)
+            foreach (var item in _transfers.Where(x => x.Value.State != "传输中" && !_pending.ContainsKey(x.Key)).Take(_transfers.Count - 200)) _transfers.TryRemove(item.Key, out _);
+        if (_transfersForm == null || _transfersForm.IsDisposed) return;
+        var rows = _pending.Select(p => new TransferRow(p.Key, "待接受 · " + p.Value.Address + " · " + string.Join("、", p.Value.Offer.Files.Select(f => f.Name)) + " · " + p.Value.Offer.Files.Sum(f => f.Size) + " 字节", true))
+            .Concat(_transfers.Where(p => !_pending.ContainsKey(p.Key)).Select(p => new TransferRow(p.Key, p.Value.Direction + " · " + p.Value.State + " · " + p.Value.Completed + " / " + p.Value.Total + " 字节", false))).ToArray();
+        _transfersForm.UpdateRows(rows);
+    }
 
 	private void CopyPairingKey()
 	{
 		string text = Convert.ToHexString(_pairingKey);
-		_clipboardListener.SuppressNextText(text);
 		try
 		{
 			Clipboard.SetText(text);
@@ -424,24 +473,15 @@ internal sealed class TrayAppContext : ApplicationContext
 		}
 	}
 
-	private void SetClipboardText(string text)
-	{
-		if (!_enabled)
-		{
-			return;
-		}
-		try
-		{
-			_node.MarkRemoteTextApplied(text);
-			Clipboard.SetText(text, TextDataFormat.UnicodeText);
-			ReportStatus("已接收并写入剪贴板");
-		}
-		catch (ExternalException)
-		{
-			_node.OnLocalClipboardTextChanged(string.Empty);
-			ReportStatus("剪贴板正忙，本次接收未写入");
-		}
-	}
+    private async void SetClipboardText(string text)
+    {
+        for (int i = 0; i < 6 && !_exiting; i++)
+        {
+            try { Clipboard.SetText(text, TextDataFormat.UnicodeText); ReportStatus("已接收并写入剪贴板"); return; }
+            catch (ExternalException) { if (i < 5) await Task.Delay(50); }
+        }
+        if (!_exiting) ReportStatus("剪贴板正忙，本次接收未写入");
+    }
 
 	protected override void ExitThreadCore()
 	{
@@ -454,7 +494,8 @@ internal sealed class TrayAppContext : ApplicationContext
 			_systemThemeWatcher.Dispose();
 			_refreshTimer.Dispose();
 			_updateTimer.Dispose();
-			_clipboardListener.Dispose();
+			_files.Dispose();
+            _transfersForm?.Dispose();
 			_node.Dispose();
 			_trayIcon.Visible = false;
 			_trayIcon.ContextMenuStrip?.Dispose();
