@@ -51,3 +51,12 @@
 - 修改更新协议、发布脚本或工作流后，至少运行 dotnet build、两个 smoke test 项目构建和 tools/test_publish_github.py。
 - 原版安装器没有 Authenticode 代码签名；构建成功不等于完整安装、原位升级、真实网络更新、剪贴板和局域网业务已经验证。
 - 安装器权限策略必须通过 tools/Test-InstallerPolicy.ps1 验证；安装器管理员权限和应用普通用户自动更新权限是两个不同边界，不能只修改其中一个。
+
+## Android 正式发布
+
+- 0.4.0 起 GitHub Release 同时包含 Windows Setup.exe、更新 ZIP 和 ClipBridge-<version>-android.apk。
+- APK 必须为非调试 release 构建，使用固定的持久发布密钥；禁止把 debug APK 作为正式包上传。
+- Android 密钥由 CLIPBRIDGE_ANDROID_KEYSTORE_BASE64 与 CLIPBRIDGE_ANDROID_KEYSTORE_PASSWORD 两个 GitHub Secrets 注入，仅写入随机临时文件，finally 清理；不得提交或输出私钥及密码。
+- 公开签名证书指纹保存在 android/release-signing-certificate.sha256；构建必须验证 APK 的包名、版本、证书和非调试属性。
+- 先运行 tools/Build-AndroidRelease.ps1，再把输出目录通过 -AndroidDirectory 传给 tools/Publish-GitHub.ps1。签名清单同时记录 APK 的版本、大小、SHA-256 和证书指纹。
+- Setup、ZIP、APK 匿名下载全部通过校验后，才允许更新 latest-v2.json。

@@ -8,6 +8,7 @@ param(
     [ValidateNotNullOrEmpty()]
     [string]$Notes,
     [string]$OutputDirectory,
+    [Parameter(Mandatory = $true)][string]$AndroidDirectory,
     [string]$PrivateKeyPath,
     [string]$InnoCompilerPath,
     [switch]$Publish
@@ -62,6 +63,7 @@ try {
     }
 
     $prepareArgs = @{
+        AndroidDirectory = $AndroidDirectory
         Version = $Version
         Notes = $Notes
         OutputDirectory = $OutputDirectory

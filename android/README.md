@@ -1,11 +1,11 @@
-# 互传 Android 本地测试版
+# 互传 Android 0.4.0
 
-这个安卓客户端与 Windows 手动互传预览版配合使用。两端都只有在用户主动点击发送后才读取、发送剪贴板纯文本；不依赖 Shizuku、ADB 或输入法权限。
+这个安卓客户端与 Windows 0.4.0 及以后版本配合使用。两端都只有在用户主动点击发送后才读取、发送剪贴板纯文本；不依赖 Shizuku、ADB 或输入法权限。
 
 ## 安装和配对
 
-1. 在手机安装本地生成的 APK。它使用 Android 开发测试签名，适合此次本机试用；尚未作为正式 Android Release 发布。
-2. Windows 运行配套的手动互传预览版。默认只显示托盘图标，点击托盘中的“打开控制面板”。如已有旧版 ClipBridge 正在运行，请先从旧版托盘退出，再启动预览版。
+1. 从 GitHub v0.4.0 发行版下载并安装 ClipBridge-0.4.0-android.apk。正式 APK 使用持久发布签名，后续版本沿用同一签名。若曾安装开发调试 APK，需要先卸载该测试版再安装正式版，手机端配对信息需要重新填写。
+2. Windows 安装并运行配套的 0.4.0 版本。默认只显示托盘图标，点击托盘中的“打开控制面板”。如已有旧版 ClipBridge 正在运行，请先从旧版托盘退出，再启动新版本。
 3. 两端接入同一 Wi-Fi 或电脑连接手机热点。
 4. 将 Windows 显示的 64 位配对密钥输入手机，点击“保存配对”。请通过你信任的方式输入密钥，不要把真实密钥提交到问题报告或日志。
 5. 手机点击“开始连接”。系统会显示连接服务通知，可以在通知中停止。若自动发现失败，在手机输入 Windows 面板显示的局域网 IPv4 地址。
@@ -45,3 +45,9 @@ JVM/C# 双向文件协议测试：先运行 TransferTests 的 --interop <临时�
 ## 验证边界
 
 自动化测试和构建不等同于一加 15 实机验证。手机系统剪贴板、系统文件选择器、MediaStore 保存、ColorOS 后台限制、真实 Wi-Fi/热点、防火墙以及 1 GiB 视频的实际手机传输，需要在你方便使用手机时逐项验证。Windows 交互式 UI smoke test 仅编译，按用户游戏期间不打扰的要求不执行。
+
+## 正式签名与恢复
+
+GitHub Actions 使用 CLIPBRIDGE_ANDROID_KEYSTORE_BASE64 与 CLIPBRIDGE_ANDROID_KEYSTORE_PASSWORD 两个受保护 Secret 签名。私钥不提交到仓库；公开证书指纹固定在 release-signing-certificate.sha256。tools/Build-AndroidRelease.ps1 负责检查非调试构建、应用版本、包名、APK 签名及证书指纹，私钥临时文件始终在 finally 删除。不能通过临时换钥继续覆盖安装旧版。
+
+Windows 和 Android 安装包都作为同一 GitHub Release 的附件发布。Windows RSA 签名清单同时记录 Android APK 大小、哈希和证书指纹，所有公开下载校验通过后才更新 latest-v2.json。

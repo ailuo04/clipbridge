@@ -14,6 +14,8 @@
 在仓库 Settings -> Secrets and variables -> Actions 中配置：
 
 - CLIPBRIDGE_UPDATE_PRIVATE_KEY：完整 PEM 私钥，只在 runner 任务期间注入。
+- CLIPBRIDGE_ANDROID_KEYSTORE_BASE64：持久 Android 发布 PKCS12 密钥的 Base64 内容。
+- CLIPBRIDGE_ANDROID_KEYSTORE_PASSWORD：Android 发布密钥的密码；不得打印或提交。
 - GITHUB_TOKEN：GitHub Actions 自动提供，不要手工复制到仓库或脚本参数。
 
 签名私钥还必须在仓库外保留至少两份加密备份。公钥不能恢复私钥，普通用户不需要私钥。
@@ -21,7 +23,7 @@
 ## 发布流程
 
 1. 提交源码、测试和发布说明，确保版本代码和 release-notes-<version>.txt 一致。
-2. 先在本地运行不带 -Publish 的 tools/Publish-GitHub.ps1，检查构建、签名、哈希和 ZIP。
+2. 先使用 tools/Build-AndroidRelease.ps1 构建并验签 Android APK，再将它的输出目录以 -AndroidDirectory 传给不带 -Publish 的 tools/Publish-GitHub.ps1，验证 Windows Setup、ZIP、Android APK 和 RSA 签名清单。
 3. 推送版本标签，例如：
 
 ~~~powershell
@@ -48,3 +50,9 @@ git push origin v0.3.9
 5. 运行本地无发布构建，确认工作流文件和测试正常，再推送版本标签。
 
 如果签名私钥丢失，不能继续签发当前频道的兼容清单；必须人工安装一次新的密钥迁移版本，并在迁移前后重新备份新私钥。
+
+## 0.4.0 双端发布
+
+正式发布要求 Java 17、Android SDK 36 / Build Tools 36.0.0。工作流先构建签名 APK、验证固定证书与非调试属性，再生成 Windows 安装器、ZIP 和含 android 字段的 RSA 签名清单。三个安装资产下载后均需验证大小和 SHA-256，验证成功后更新频道。
+
+Android 私钥位于仓库之外的持久密钥目录，密码使用当前 Windows 用户 DPAPI 加密保存；另有本机备份。DPAPI 密码文件无法在重装系统或换用户后直接解密，重置电脑前应把解密后的密钥及密码转存至密码管理器和独立加密介质，并重新配置 GitHub Secrets。不要把调试 APK 当作正式附件上传。

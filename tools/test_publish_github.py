@@ -123,6 +123,47 @@ class PublishTests(unittest.TestCase):
         self.publish()
         self.assertNotIn('release-notes-1.2.3.txt', self.github.events)
 
+    def attach_android(self):
+        content = b'synthetic release APK'
+        self.android = {
+            'version': self.version, 'versionCode': 10203, 'packageName': 'app.clipbridge',
+            'url': pub.REPO + '/releases/download/v1.2.3/ClipBridge-1.2.3-android.apk',
+            'size': len(content), 'sha256': pub.sha256(content),
+            'certificateSha256': 'a' * 64,
+        }
+        payload = {'schema': 1, 'windows': self.win, 'android': self.android}
+        self.envelope = json.dumps({'payload': base64.b64encode(json.dumps(payload).encode()).decode(), 'signature': 'synthetic'}).encode()
+        for name in ('latest-v2.json', 'manifest-1.2.3.json'):
+            (self.directory / name).write_bytes(self.envelope)
+        (self.directory / 'ClipBridge-1.2.3-android.apk').write_bytes(content)
+
+    def test_android_apk_uploaded_before_channel_promotion(self):
+        self.attach_android()
+        self.publish()
+        self.assertIn('asset:ClipBridge-1.2.3-android.apk', self.github.events)
+        self.assertEqual(self.github.events[-1], 'latest-v2.json')
+        self.assertIn('Android', self.github.release['body'])
+        self.assertIn(self.android['sha256'], self.github.release['body'])
+        self.assertNotIn('APK 尚未发布', self.github.files['README.md'].decode())
+
+    def test_bad_android_hash_stops_before_remote_write(self):
+        self.attach_android()
+        (self.directory / 'ClipBridge-1.2.3-android.apk').write_bytes(b'changed APK')
+        with self.assertRaises(pub.PublishError):
+            self.publish()
+        self.assertEqual(self.github.events, [])
+
+    def test_android_download_failure_never_promotes_channel(self):
+        self.attach_android()
+        def download(url, *args, **kwargs):
+            if url.endswith('.apk'):
+                raise pub.PublishError('Synthetic APK download failure')
+            return self.public(url, *args, **kwargs)
+        with patch.object(pub, 'public_bytes', side_effect=download):
+            with self.assertRaises(pub.PublishError):
+                pub.publish(self.directory, self.version, 'synthetic-source', self.github)
+        self.assertNotIn('latest-v2.json', self.github.files)
+
     def test_version_order_and_validation(self):
         self.assertGreater(pub.version_tuple('1.10.0'), pub.version_tuple('1.9.9'))
         with self.assertRaises(pub.PublishError):

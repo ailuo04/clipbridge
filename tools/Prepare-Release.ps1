@@ -9,6 +9,7 @@ param(
     [string]$Notes,
     [Parameter(Mandatory = $true)]
     [string]$OutputDirectory,
+    [Parameter(Mandatory = $true)][string]$AndroidDirectory,
     [string]$PrivateKeyPath = (Join-Path $env:USERPROFILE '.clipbridge-release-keys\clipbridge-update-private.pem'),
     [string]$InnoCompilerPath = (Join-Path $env:LOCALAPPDATA 'ClipBridgeBuildTools\InnoSetup\ISCC.exe')
 )
@@ -58,6 +59,12 @@ try {
         }
     } finally { $archive.Dispose() }
 
+    $android = Get-Content -LiteralPath (Join-Path $AndroidDirectory 'android-release.json') -Raw | ConvertFrom-Json
+    $androidName = "ClipBridge-$Version-android.apk"
+    $androidPath = Join-Path $AndroidDirectory $androidName
+    $expectedCertificate = [IO.File]::ReadAllText((Join-Path $sourceRoot 'android/release-signing-certificate.sha256')).Trim()
+    if ($android.version -ne $Version -or $android.packageName -ne 'app.clipbridge' -or $android.certificateSha256 -ne $expectedCertificate -or $android.url -cne "$releaseBaseUrl/releases/download/v$Version/$androidName" -or (Get-Item -LiteralPath $androidPath).Length -ne $android.size -or (Get-FileHash -LiteralPath $androidPath -Algorithm SHA256).Hash -ne $android.sha256) { throw 'Android release metadata mismatch.' }
+    Copy-Item -LiteralPath $androidPath -Destination (Join-Path $output $androidName)
     $zip = Get-Item -LiteralPath $zipPath
     $setup = Get-Item -LiteralPath $setupPath
     $payload = [ordered]@{
@@ -73,7 +80,7 @@ try {
             installerSha256 = (Get-FileHash -LiteralPath $setupPath -Algorithm SHA256).Hash.ToLowerInvariant()
             notes = $Notes
         }
-        android = $null
+        android = $android
     }
     $payloadBytes = [Text.Encoding]::UTF8.GetBytes(($payload | ConvertTo-Json -Depth 8 -Compress))
     $signature = $rsa.SignData($payloadBytes, [Security.Cryptography.HashAlgorithmName]::SHA256, [Security.Cryptography.RSASignaturePadding]::Pkcs1)

@@ -67,7 +67,31 @@ def validate_bundle(directory, version):
             raise PublishError('Artifact exceeds the supported size limit.')
     if normalize_notes((directory / 'release-notes.txt').read_text(encoding='utf-8')) != normalize_notes(win.get('notes', '')):
         raise PublishError('Release notes mismatch.')
+    validate_android(directory, version, payload.get("android"))
     return envelope, win
+
+
+def validate_android(directory, version, android):
+    if android is None:
+        return None
+    name = f'ClipBridge-{version}-android.apk'
+    expected_url = f'{REPO}/releases/download/v{version}/{name}'
+    if not isinstance(android, dict) or android.get('version') != version or android.get('packageName') != 'app.clipbridge' or android.get('url') != expected_url:
+        raise PublishError('Android version, package or URL mismatch.')
+    if type(android.get('versionCode')) is not int or android['versionCode'] <= 0:
+        raise PublishError('Invalid Android version code.')
+    if not re.fullmatch(r'[0-9a-f]{64}', android.get('certificateSha256', '')):
+        raise PublishError('Invalid Android signing certificate fingerprint.')
+    data = (directory / name).read_bytes()
+    if not 0 < len(data) < 100 * 1024 * 1024 or len(data) != android.get('size') or sha256(data) != android.get('sha256'):
+        raise PublishError('Android APK hash or size mismatch.')
+    return android
+
+
+def bundle_android(directory, version):
+    envelope = json.loads((directory / 'latest-v2.json').read_bytes())
+    payload = json.loads(base64.b64decode(envelope['payload'], validate=True))
+    return validate_android(directory, version, payload.get('android'))
 
 
 class GitHub:
@@ -180,8 +204,9 @@ def public_bytes(url, expected_size=None, expected_hash=None, max_bytes=2 * 1024
             time.sleep(5 * (attempt + 1))
 
 
-def release_body(version, win, source_sha):
-    return (
+def release_body(version, win, source_sha, android=None):
+    android_text = (f"## Android {version}\n\n[下载 Android APK]({android['url']})\n\nAPK SHA-256: {android['sha256']}\n\n签名证书 SHA-256: {android['certificateSha256']}\n\n" if android else "")
+    return android_text + (
         f'## Windows {version}\n\n{win["notes"]}\n\n'
         '**升级说明：**0.3.8 用户需要先手动安装 0.3.9；0.3.9 及以后版本使用 GitHub 更新清单和新的签名密钥，后续版本可自动更新。\n\n'
         '普通用户不需要任何发布密钥。安装器未进行 Authenticode 代码签名；干净电脑首次安装、原版原位升级和真实生产网络更新仍需按实际环境验证。\n\n'
@@ -190,7 +215,8 @@ def release_body(version, win, source_sha):
     )
 
 
-def public_readme(version, win):
+def public_readme(version, win, android=None):
+    android_line = (f"- Android APK：[下载安装]({android['url']})；手动配对和发送步骤见 [安卓说明](android/README.md)。\n\n" if android else "- Android APK 尚未发布。\n\n")
     return (
         f'# 互传 ClipBridge\n\n当前 Windows 版本：**{version}**\n\n'
         f'[下载安装器]({win["installerUrl"]}) · [发行版与更新说明]({REPO}/releases/tag/v{version})\n\n'
@@ -199,9 +225,10 @@ def public_readme(version, win):
         '## 安装与自动更新\n\n'
         '- 0.3.8 用户需要手动安装一次 0.3.9；安装后应用会从 GitHub 获取签名更新清单，后续版本自动更新。\n'
         '- 普通用户不需要发布密钥；更新清单和安装包都会校验 SHA-256 与 RSA 签名。\n'
-        '- 0.3.10 安装器需要管理员权限创建安装目录；安装目录会授予当前用户 Modify 权限，后续更新无需重复 UAC。\n'
+        '- 0.3.10 及以后安装器需要管理员权限创建安装目录；安装目录会授予当前用户 Modify 权限，后续更新无需重复 UAC。\n'
         '- 缺少 .NET 10 桌面运行时时，安装器从 Microsoft 官方下载、校验并请求管理员授权安装。\n'
-        '- 安装器未进行 Authenticode 代码签名；Android APK 尚未发布。\n\n'
+        '- 安装器未进行 Authenticode 代码签名。\n'
+        + android_line +
         '## 开发与发布\n\n'
         f'源码、GitHub Actions、更新清单和发行版都在 [{REPO}](https://github.com/ailuo04/clipbridge)。发布私钥只作为 GitHub Actions Secret 使用，不进入仓库、构建产物或日志。电脑重置后重新克隆该仓库即可继续开发；私钥还必须在仓库外保留加密备份。\n'
     ).encode('utf-8')
@@ -209,9 +236,12 @@ def public_readme(version, win):
 
 def publish(directory, version, source_sha, github):
     envelope, win = validate_bundle(directory, version)
+    android = bundle_android(directory, version)
     print(f'Validated local release {version}', flush=True)
     tag = 'v' + version
     marker = f'zip:{win["sha256"]};setup:{win["installerSha256"]}'
+    if android:
+        marker += ';apk:' + android['sha256']
     release = github.release_by_tag(tag)
     if release and marker not in release.get('body', ''):
         raise PublishError('Existing release is different; never overwrite a published version.')
@@ -249,16 +279,16 @@ def publish(directory, version, source_sha, github):
             'tag_name': tag,
             'target_commitish': source_sha,
             'name': f'ClipBridge / 互传 {version}',
-            'body': release_body(version, win, source_sha),
+            'body': release_body(version, win, source_sha, android) + ('\n<!-- ' + marker + ' -->' if android else ''),
             'draft': True,
             'prerelease': False,
         })
 
     assets = {asset['name']: asset for asset in github.assets(release)}
-    for path, expected_size, expected_hash in (
-        (setup_path, win['installerSize'], win['installerSha256']),
-        (zip_path, win['size'], win['sha256']),
-    ):
+    artifacts = [(setup_path, win['installerSize'], win['installerSha256']), (zip_path, win['size'], win['sha256'])]
+    if android:
+        artifacts.append((directory / f'ClipBridge-{version}-android.apk', android['size'], android['sha256']))
+    for path, expected_size, expected_hash in artifacts:
         existing = assets.get(path.name)
         if existing:
             public_bytes(existing['browser_download_url'], expected_size, expected_hash, max_bytes=100 * 1024 * 1024)
@@ -266,14 +296,18 @@ def publish(directory, version, source_sha, github):
             print(f'Uploading GitHub release asset {path.name} ({path.stat().st_size} bytes)', flush=True)
             github.upload(release, path)
 
-    body = release_body(version, win, source_sha)
+    body = release_body(version, win, source_sha, android)
+    if android:
+        body += "\n<!-- " + marker + " -->"
     release = github.update_release(release, body, draft=False)
     print('Verifying anonymous GitHub Release asset downloads', flush=True)
     public_bytes(win['installerUrl'], win['installerSize'], win['installerSha256'], max_bytes=100 * 1024 * 1024)
     public_bytes(win['url'], win['size'], win['sha256'], max_bytes=100 * 1024 * 1024)
+    if android:
+        public_bytes(android['url'], android['size'], android['sha256'], max_bytes=100 * 1024 * 1024)
     print('Downloads verified; promoting the GitHub update channel', flush=True)
 
-    github.write_file('README.md', public_readme(version, win))
+    github.write_file('README.md', public_readme(version, win, android))
     github.write_file('latest-v2.json', envelope)
     if public_bytes(RAW + '/latest-v2.json') != envelope:
         raise PublishError('Public channel is not yet serving the exact signed manifest.')
@@ -281,7 +315,7 @@ def publish(directory, version, source_sha, github):
     if published.get('draft') or published.get('prerelease'):
         raise PublishError('GitHub Release is not stable after publication.')
     published_assets = {asset['name']: asset for asset in github.assets(published)}
-    if setup_path.name not in published_assets or zip_path.name not in published_assets:
+    if any(path.name not in published_assets for path, _, _ in artifacts):
         raise PublishError('GitHub Release asset verification failed.')
     print(f'PASS public release {REPO}/releases/tag/{tag}', flush=True)
     print('PASS anonymous Setup/ZIP download hashes and signed manifest bytes', flush=True)

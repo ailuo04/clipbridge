@@ -35,3 +35,11 @@ try {
     if ($config.runtimeOptions.tfm -ne 'net10.0' -or @($config.runtimeOptions.frameworks | Where-Object { $_.name -eq 'Microsoft.WindowsDesktop.App' -and $_.version -eq '10.0.14' }).Count -ne 1) { throw 'ZIP 运行时版本不匹配。' }
 } finally { $zip.Dispose() }
 Write-Output 'PASS signed manifest and update archive'
+
+$android = $data.android
+$apkName = "ClipBridge-$Version-android.apk"
+$apkPath = Join-Path $Directory $apkName
+$certificate = [IO.File]::ReadAllText((Join-Path (Split-Path -Parent $PSScriptRoot) 'android/release-signing-certificate.sha256')).Trim()
+if (-not $android -or $android.version -ne $Version -or $android.packageName -ne 'app.clipbridge' -or $android.versionCode -le 0 -or $android.certificateSha256 -cne $certificate -or $android.url -cne "$releaseBaseUrl/releases/download/v$Version/$apkName") { throw 'Android manifest version, certificate or URL mismatch.' }
+if ((Get-Item -LiteralPath $apkPath).Length -ne $android.size -or (Get-FileHash -LiteralPath $apkPath -Algorithm SHA256).Hash -ne $android.sha256) { throw 'Android APK size or hash mismatch.' }
+Write-Output 'PASS Android APK, pinned signing certificate and signed manifest metadata'

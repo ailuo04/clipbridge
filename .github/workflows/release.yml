@@ -15,6 +15,10 @@ on:
         required: true
         type: string
 
+concurrency:
+  group: clipbridge-release
+  cancel-in-progress: false
+
 permissions:
   contents: write
 
@@ -22,6 +26,8 @@ jobs:
   release:
     runs-on: windows-latest
     env:
+      CLIPBRIDGE_ANDROID_KEYSTORE_BASE64: ${{ secrets.CLIPBRIDGE_ANDROID_KEYSTORE_BASE64 }}
+      CLIPBRIDGE_ANDROID_KEYSTORE_PASSWORD: ${{ secrets.CLIPBRIDGE_ANDROID_KEYSTORE_PASSWORD }}
       CLIPBRIDGE_UPDATE_PRIVATE_KEY: ${{ secrets.CLIPBRIDGE_UPDATE_PRIVATE_KEY }}
       GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       DISPATCH_VERSION: ${{ inputs.version }}
@@ -35,6 +41,16 @@ jobs:
         uses: actions/setup-dotnet@v4
         with:
           global-json-file: global.json
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+      - name: Install Android build packages
+        shell: pwsh
+        run: sdkmanager "platforms;android-36" "build-tools;36.0.0"
       - name: Resolve release metadata
         shell: pwsh
         run: |
@@ -53,6 +69,13 @@ jobs:
           Add-Content -Path $env:GITHUB_ENV -Value 'RELEASE_NOTES<<CLIPBRIDGE_NOTES'
           Add-Content -Path $env:GITHUB_ENV -Value $notes
           Add-Content -Path $env:GITHUB_ENV -Value 'CLIPBRIDGE_NOTES'
+      - name: Build and verify signed Android release
+        shell: pwsh
+        run: |
+          $androidOutput = Join-Path $env:RUNNER_TEMP ("clipbridge-android-" + $env:RELEASE_VERSION)
+          & tools/Build-AndroidRelease.ps1 -Version $env:RELEASE_VERSION -OutputDirectory $androidOutput
+          if ($LASTEXITCODE -ne 0) { throw 'Android release validation failed.' }
+          "ANDROID_RELEASE_DIRECTORY=$androidOutput" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
       - name: Install verified Inno Setup
         shell: pwsh
         run: |
@@ -68,10 +91,11 @@ jobs:
           dotnet build ClipBridge.csproj --configuration Release --nologo
           dotnet build tools/UiSmokeTests/UiSmokeTests.csproj --configuration Release --nologo
           dotnet build tools/UpdateSmokeTests/UpdateSmokeTests.csproj --configuration Release --nologo
+          dotnet run --project tools/TransferTests/TransferTests.csproj --configuration Release
           python -m unittest discover -s tools -p 'test_publish_github.py'
       - name: Build, sign and publish release
         shell: pwsh
         run: |
           $output = Join-Path $env:RUNNER_TEMP ("clipbridge-release-" + $env:RELEASE_VERSION)
-          & pwsh -File tools/Publish-GitHub.ps1 -Version $env:RELEASE_VERSION -Notes $env:RELEASE_NOTES -OutputDirectory $output -InnoCompilerPath $env:INNO_COMPILER_PATH -Publish
+          & pwsh -File tools/Publish-GitHub.ps1 -Version $env:RELEASE_VERSION -Notes $env:RELEASE_NOTES -OutputDirectory $output -AndroidDirectory $env:ANDROID_RELEASE_DIRECTORY -InnoCompilerPath $env:INNO_COMPILER_PATH -Publish
           if ($LASTEXITCODE -ne 0) { throw "Publish-GitHub 失败：$LASTEXITCODE" }
