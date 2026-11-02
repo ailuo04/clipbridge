@@ -34,7 +34,7 @@ class ReceivedFiles(private val context: Context, private val offer: Offer) : Au
         val inserted = mutableListOf<Uri>()
         try {
             offer.files.forEachIndexed { i, item ->
-                val values = ContentValues().apply { put(MediaStore.Downloads.DISPLAY_NAME, item.name); put(MediaStore.Downloads.MIME_TYPE, "application/octet-stream"); put(MediaStore.Downloads.RELATIVE_PATH, "Download/ClipBridge"); put(MediaStore.Downloads.IS_PENDING, 1) }
+                val values = ContentValues().apply { put(MediaStore.Downloads.DISPLAY_NAME, item.name); put(MediaStore.Downloads.MIME_TYPE, android.webkit.MimeTypeMap.getSingleton().getMimeTypeFromExtension(item.name.substringAfterLast('.', "").lowercase(java.util.Locale.ROOT)) ?: "application/octet-stream"); put(MediaStore.Downloads.RELATIVE_PATH, "Download/ClipBridge"); put(MediaStore.Downloads.IS_PENDING, 1) }
                 val uri = context.contentResolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values) ?: error("无法创建接收文件")
                 inserted.add(uri)
                 val output = context.contentResolver.openOutputStream(uri, "w") ?: error("无法保存接收文件")

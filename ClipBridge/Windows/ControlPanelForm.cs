@@ -230,6 +230,10 @@ internal sealed class ControlPanelForm : Form
 
     public event Action? ReviewIncomingRequested;
 
+	private readonly ModernButton _pairDevices = new ModernButton("附近设备与配对", ButtonTone.Primary);
+    public event Action? ManageDevicesRequested;
+    public void SetPairingCount(int count) { _pairDevices.Text = count > 0 ? $"设备配对 · {count} 项待确认" : "附近设备与配对"; }
+
 	public event Action? CopyKeyRequested;
 
 	public event Action<string>? AddPeerRequested;
@@ -270,7 +274,8 @@ internal sealed class ControlPanelForm : Form
 		MaximizeBox = true;
 		DoubleBuffered = true;
 		Opacity = 1.0;
-		ConfigureControls(pairingKey);
+		_pairDevices.Click += (_, _) => ManageDevicesRequested?.Invoke();
+        ConfigureControls(pairingKey);
 		_themeSelector.SetMode(_themeMode);
 		Controls.Add(BuildLayout());
 		_renderedPalette = UiPalette.Capture();
@@ -745,7 +750,10 @@ internal sealed class ControlPanelForm : Form
 		tableLayoutPanel3.Controls.Add(_addPeer, 1, 0);
 		tableLayoutPanel.Controls.Add(tableLayoutPanel2, 0, 0);
 		tableLayoutPanel.Controls.Add(panel, 0, 1);
-		tableLayoutPanel.Controls.Add(_pendingFiles, 0, 2);
+		var deviceActions = new FlowLayoutPanel { Dock = DockStyle.Fill, WrapContents = false, Margin = Padding.Empty, BackColor = Ui.SurfaceMintBody };
+        _pairDevices.AutoSize = true; _pairDevices.Height = 36;
+        deviceActions.Controls.Add(_pairDevices); deviceActions.Controls.Add(_pendingFiles);
+        tableLayoutPanel.Controls.Add(deviceActions, 0, 2);
         tableLayoutPanel.Controls.Add(tableLayoutPanel3, 0, 3);
 		// Hairline above the manual-IP row so it reads as a separate action area.
 		tableLayoutPanel.Paint += (object? _, PaintEventArgs e) =>

@@ -13,6 +13,8 @@ namespace ClipBridge.Windows;
 internal sealed class FileTransferNode : IDisposable
 {
     private readonly byte[] _key;
+    private readonly DeviceHub? _hub;
+    private readonly ConcurrentDictionary<string, string> _activePeers = new();
     private readonly string _directory;
     private readonly string _deviceId = Guid.NewGuid().ToString("N");
     private readonly TcpListener _listener;
@@ -25,8 +27,10 @@ internal sealed class FileTransferNode : IDisposable
     public int Port => ((IPEndPoint)_listener.LocalEndpoint).Port;
     public event Action<TransferProgress>? Progress;
     public event Action<string>? StatusChanged;
-    public FileTransferNode(byte[] pairing, string directory, Func<FileOffer, IPAddress, CancellationToken, Task<bool>> confirm, int port = TransferProtocol.Port)
+    public FileTransferNode(byte[] pairing, string directory, Func<FileOffer, IPAddress, CancellationToken, Task<bool>> confirm, int port = TransferProtocol.Port, DeviceHub? hub = null)
     {
+        _hub = hub; _deviceId = hub?.DeviceId ?? _deviceId;
+        if (hub != null) hub.Revoked += Revoke;
         _key = TransferProtocol.DeriveKey(pairing); _directory = directory; _confirm = confirm;
         _listener = new TcpListener(IPAddress.Any, port); _listener.Start(4); _ = ListenAsync();
     }
@@ -54,28 +58,32 @@ internal sealed class FileTransferNode : IDisposable
             using (var connect = CancellationTokenSource.CreateLinkedTokenSource(lifetime.Token)) { connect.CancelAfter(5000); await client.ConnectAsync(address, port, connect.Token); }
             using var closeOnCancel = lifetime.Token.Register(() => client.Dispose());
             var stream = client.GetStream();
-            await TransferProtocol.WriteJsonAsync(stream, _key, offer, lifetime.Token);
+            var peer = _hub?.Devices().FirstOrDefault(p => p.Address == address.ToString() && p.Authenticated);
+            if (peer != null) _activePeers[id] = peer.Id;
+            byte[] key = _hub == null ? _key : await _hub.OutgoingAsync(stream, address, 2, _key, lifetime.Token);
+            await TransferProtocol.WriteJsonAsync(stream, key, offer, lifetime.Token);
             Progress?.Invoke(new TransferProgress(id, "发送", "等待对方接受", 0, total));
-            TransferProtocol.RequireReply(TransferProtocol.Decode<TransferReply>(await TransferProtocol.ReadAsync(stream, _key, lifetime.Token, 120)), id, "accept");
+            TransferProtocol.RequireReply(TransferProtocol.Decode<TransferReply>(await TransferProtocol.ReadAsync(stream, key, lifetime.Token, 120)), id, "accept");
             byte[] buffer = new byte[TransferProtocol.ChunkSize];
             for (int i = 0; i < paths.Length; i++)
             {
                 using var input = File.OpenRead(paths[i]); long offset = 0;
                 while (offset < files[i].Size)
                 {
+                    RequireActivePeer(id);
                     int count = await input.ReadAsync(buffer.AsMemory(0, (int)Math.Min(buffer.Length, files[i].Size - offset)), lifetime.Token);
                     if (count == 0) throw new IOException("发送文件在准备后发生变化");
-                    await TransferProtocol.WriteAsync(stream, _key, TransferProtocol.Chunk(id, i, offset, buffer.AsSpan(0, count)), lifetime.Token);
+                    await TransferProtocol.WriteAsync(stream, key, TransferProtocol.Chunk(id, i, offset, buffer.AsSpan(0, count)), lifetime.Token);
                     offset += count; completed += count;
                     Progress?.Invoke(new TransferProgress(id, "发送", "传输中", completed, total));
                 }
             }
-            await TransferProtocol.WriteJsonAsync(stream, _key, new TransferReply("finish", id), lifetime.Token);
-            TransferProtocol.RequireReply(TransferProtocol.Decode<TransferReply>(await TransferProtocol.ReadAsync(stream, _key, lifetime.Token, 120)), id, "complete");
+            await TransferProtocol.WriteJsonAsync(stream, key, new TransferReply("finish", id), lifetime.Token);
+            TransferProtocol.RequireReply(TransferProtocol.Decode<TransferReply>(await TransferProtocol.ReadAsync(stream, key, lifetime.Token, 120)), id, "complete");
             Progress?.Invoke(new TransferProgress(id, "发送", "对方已保存并校验", total, total));
         }
         catch { Progress?.Invoke(new TransferProgress(id, "发送", lifetime.IsCancellationRequested ? "已取消" : "失败", completed, total)); throw; }
-        finally { _active.TryRemove(id, out _); }
+        finally { _active.TryRemove(id, out _); _activePeers.TryRemove(id, out _); }
     }
     private async Task ListenAsync()
     {
@@ -99,7 +107,13 @@ internal sealed class FileTransferNode : IDisposable
             try
             {
                 var stream = client.GetStream();
-                var offer = TransferProtocol.Decode<FileOffer>(await TransferProtocol.ReadAsync(stream, _key, lifetime.Token));
+                SessionRoute route;
+                using (var handshake = CancellationTokenSource.CreateLinkedTokenSource(lifetime.Token))
+                { handshake.CancelAfter(5000); route = _hub == null ? new SessionRoute(_key, null, null) : await _hub.IncomingAsync(stream, 2, _key, handshake.Token); }
+                byte[] key = route.Key;
+                var offer = TransferProtocol.Decode<FileOffer>(await TransferProtocol.ReadAsync(stream, key, lifetime.Token, firstHeader: route.Prefix));
+                if (route.Source != null && route.Source != offer.OriginDeviceId) throw new CryptographicException("文件来源不符");
+                if (route.Source != null) _activePeers[offer.TransferId] = route.Source;
                 total = TransferProtocol.ValidateOffer(offer); id = offer.TransferId;
                 long now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
                 foreach (var seen in _seen) if (now - seen.Value > 600000) _seen.TryRemove(seen.Key, out _);
@@ -113,12 +127,13 @@ internal sealed class FileTransferNode : IDisposable
                     try { accepted = await _confirm(offer, address, decision.Token).WaitAsync(decision.Token); }
                     catch (OperationCanceledException) { accepted = false; }
                 }
-                await TransferProtocol.WriteJsonAsync(stream, _key, new TransferReply(accepted ? "accept" : "reject", id), lifetime.Token);
+                await TransferProtocol.WriteJsonAsync(stream, key, new TransferReply(accepted ? "accept" : "reject", id), lifetime.Token);
                 if (!accepted) { Progress?.Invoke(new TransferProgress(id, "接收", "已拒绝或超时", 0, total)); return; }
                 using var store = new ReceiveFileStore(_directory, offer.Files);
                 while (true)
                 {
-                    byte[] plain = await TransferProtocol.ReadAsync(stream, _key, lifetime.Token);
+                    RequireActivePeer(id);
+                    byte[] plain = await TransferProtocol.ReadAsync(stream, key, lifetime.Token);
                     if (plain.Length > 0 && plain[0] == 1)
                     {
                         var chunk = TransferProtocol.ParseChunk(id, plain); store.Append(chunk.Index, chunk.Offset, chunk.Data); done += chunk.Data.Length;
@@ -127,8 +142,8 @@ internal sealed class FileTransferNode : IDisposable
                     else
                     {
                         TransferProtocol.RequireReply(TransferProtocol.Decode<TransferReply>(plain), id, "finish");
-                        store.Commit(lifetime.Token);
-                        await TransferProtocol.WriteJsonAsync(stream, _key, new TransferReply("complete", id), lifetime.Token);
+                        RequireActivePeer(id); store.Commit(lifetime.Token);
+                        await TransferProtocol.WriteJsonAsync(stream, key, new TransferReply("complete", id), lifetime.Token);
                         Progress?.Invoke(new TransferProgress(id, "接收", "已保存并校验", total, total)); break;
                     }
                 }
@@ -137,12 +152,15 @@ internal sealed class FileTransferNode : IDisposable
             {
                 if (!_stop.IsCancellationRequested) { StatusChanged?.Invoke("文件接收未完成，请查看传输记录后重试"); Progress?.Invoke(new TransferProgress(id, "接收", lifetime.IsCancellationRequested ? "已取消" : "失败", done, total)); }
             }
-            finally { if (id.Length != 0) _active.TryRemove(id, out _); _slots.Release(); }
+            finally { if (id.Length != 0) { _active.TryRemove(id, out _); _activePeers.TryRemove(id, out _); } _slots.Release(); }
         }
     }
+    private void RequireActivePeer(string id) { if (_hub != null && _activePeers.TryGetValue(id,out var peer) && !_hub.IsTrusted(peer)) throw new IOException("配对已撤销"); }
+    private void Revoke(string peer) { foreach (var p in _activePeers.Where(p => p.Value == peer)) Cancel(p.Key); }
     public void Dispose()
     {
         if (_disposed) return; _disposed = true;
+        if (_hub != null) _hub.Revoked -= Revoke;
         _stop.Cancel(); _listener.Stop();
     }
 }

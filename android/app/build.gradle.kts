@@ -3,7 +3,7 @@ android {
     namespace = "app.clipbridge"
     compileSdk = 36
     buildToolsVersion = "36.0.0"
-    defaultConfig { applicationId = "app.clipbridge"; minSdk = 29; targetSdk = 36; versionCode = 40000; versionName = "0.4.0" }
+    defaultConfig { applicationId = "app.clipbridge"; minSdk = 29; targetSdk = 36; versionCode = 50000; versionName = "0.5.0" }
     val releaseKeystore = providers.environmentVariable("CLIPBRIDGE_ANDROID_KEYSTORE_PATH").orNull
     if (releaseKeystore != null) {
         signingConfigs {
@@ -21,3 +21,8 @@ android {
     testOptions { unitTests.isReturnDefaultValues = true }
 }
 dependencies { testImplementation("junit:junit:4.13.2"); testImplementation("org.json:json:20240303") }
+
+tasks.withType<org.gradle.api.tasks.testing.Test>().configureEach {
+    inputs.property("clipbridgeLegacyInterop", providers.environmentVariable("CLIPBRIDGE_INTEROP_DIR").orElse(""))
+    inputs.property("clipbridgeExperienceInterop", providers.environmentVariable("CLIPBRIDGE_EXPERIENCE_INTEROP_DIR").orElse(""))
+}

@@ -21,6 +21,8 @@ internal sealed class TrayAppContext : ApplicationContext
 	private readonly ContextMenuStrip _trayMenu;
 
 	private readonly SyncNode _node;
+    private readonly DeviceHub _devices;
+    private DevicesForm? _devicesForm;
 
 	private readonly FileTransferNode _files;
     private readonly string _receiveDirectory = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "Downloads", "ClipBridge");
@@ -76,9 +78,12 @@ internal sealed class TrayAppContext : ApplicationContext
 		};
 		_themeController.RefreshSystemTheme();
 		_pairingKey = ProtectedKeyStore.LoadOrCreate();
-		_node = new SyncNode(_pairingKey, Dispatch);
+		_devices = new DeviceHub(new WindowsTrustStore(), _pairingKey);
+        _node = new SyncNode(_pairingKey, Dispatch, discovery: false, hub: _devices);
+        _devices.LegacyDiscovered += _node.DiscoveredLegacy;
 		_panel = CreatePanel(Convert.ToHexString(_pairingKey));
-		_files = new FileTransferNode(_pairingKey, _receiveDirectory, QueueFileRequestAsync);
+		_files = new FileTransferNode(_pairingKey, _receiveDirectory, QueueFileRequestAsync, hub: _devices);
+        _devices.Status += text => Dispatch(() => ReportStatus(text));
         _files.Progress += progress => { _transfers[progress.TransferId] = progress; };
         _files.StatusChanged += status => Dispatch(() => ReportStatus(status));
 		_trayMenu = new ContextMenuStrip
@@ -92,7 +97,8 @@ internal sealed class TrayAppContext : ApplicationContext
         _trayMenu.Items.Add("发送当前剪贴板", null, async (_, _) => await PreviewClipboardAsync());
         _trayMenu.Items.Add("发送文件", null, (_, _) => ChooseFiles());
         _trayMenu.Items.Add("文件请求与传输记录", null, (_, _) => OpenTransfers());
-		_trayMenu.Items.Add("配对密钥", null, (object? _, EventArgs _) =>
+		_trayMenu.Items.Add("附近设备与配对", null, (_, _) => OpenDevices());
+        _trayMenu.Items.Add("兼容旧版：配对密钥", null, (object? _, EventArgs _) =>
 		{
 			_panel.FocusPairing();
 		});
@@ -145,7 +151,8 @@ internal sealed class TrayAppContext : ApplicationContext
 	private ControlPanelForm CreatePanel(string pairingKey, bool emitStartupEvent = true)
 	{
 		ControlPanelForm controlPanelForm = new ControlPanelForm(pairingKey, _themeController.Mode, emitStartupEvent);
-		controlPanelForm.SendClipboardRequested += async () => await PreviewClipboardAsync();
+		controlPanelForm.ManageDevicesRequested += OpenDevices;
+        controlPanelForm.SendClipboardRequested += async () => await PreviewClipboardAsync();
         controlPanelForm.SendFilesRequested += ShowFileSend;
         controlPanelForm.ReviewIncomingRequested += OpenTransfers;
 		controlPanelForm.CopyKeyRequested += CopyPairingKey;
@@ -235,6 +242,7 @@ internal sealed class TrayAppContext : ApplicationContext
 		{
 			_panel.UpdatePeers(_node.GetPeerSnapshots());
             _panel.SetPendingFiles(_pending.Count);
+            _panel.SetPairingCount(_devices.Pending.Count);
             _trayIcon.Text = _pending.IsEmpty ? "ClipBridge · 主动发送" : $"ClipBridge · {_pending.Count} 个待接收请求";
             UpdateTransfers();
 		}
@@ -422,6 +430,12 @@ internal sealed class TrayAppContext : ApplicationContext
         _transfersForm.UpdateRows(rows);
     }
 
+	private void OpenDevices()
+    {
+        if (_devicesForm == null || _devicesForm.IsDisposed) _devicesForm = new DevicesForm(_devices);
+        _devicesForm.Show(_panel); _devicesForm.Activate();
+    }
+
 	private void CopyPairingKey()
 	{
 		string text = Convert.ToHexString(_pairingKey);
@@ -497,6 +511,7 @@ internal sealed class TrayAppContext : ApplicationContext
 			_files.Dispose();
             _transfersForm?.Dispose();
 			_node.Dispose();
+            _devices.Dispose(); _devicesForm?.Dispose();
 			_trayIcon.Visible = false;
 			_trayIcon.ContextMenuStrip?.Dispose();
 			_trayIcon.Dispose();

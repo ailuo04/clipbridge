@@ -42,7 +42,7 @@ public class InteropTest {
         try (ServerSocket listener = new ServerSocket(0)) {
             listener.setSoTimeout(20000);
             try (Socket control = new Socket("127.0.0.1", config.getInt("controlPort"))) {
-                DataOutputStream output = new DataOutputStream(control.getOutputStream()); output.writeInt(listener.getLocalPort()); output.flush();
+                DataOutputStream output = new DataOutputStream(control.getOutputStream()); output.write("CBIT".getBytes(StandardCharsets.US_ASCII)); output.writeInt(listener.getLocalPort()); output.flush();
             }
             try (Socket socket = listener.accept()) {
                 socket.setSoTimeout(15000);

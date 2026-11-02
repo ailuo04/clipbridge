@@ -96,6 +96,13 @@ jobs:
           dotnet build tools/UpdateSmokeTests/UpdateSmokeTests.csproj --configuration Release --nologo
           dotnet run --project tools/TransferTests/TransferTests.csproj --configuration Release
           python -m unittest discover -s tools -p 'test_publish_github.py'
+      - name: Verify Android and Windows interoperability
+        shell: pwsh
+        run: |
+          & tools/Test-AndroidInterop.ps1 -TemporaryRoot $env:RUNNER_TEMP
+      - name: Verify installer policy
+        shell: pwsh
+        run: '& tools/Test-InstallerPolicy.ps1'
       - name: Build, sign and publish release
         shell: pwsh
         run: |

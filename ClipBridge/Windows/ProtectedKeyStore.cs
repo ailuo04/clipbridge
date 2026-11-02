@@ -35,12 +35,12 @@ internal static class ProtectedKeyStore
 		return bytes;
 	}
 
-	private static byte[] Protect(byte[] value)
+	internal static byte[] Protect(byte[] value)
 	{
 		return Transform(value, protect: true);
 	}
 
-	private static byte[] Unprotect(byte[] value)
+	internal static byte[] Unprotect(byte[] value)
 	{
 		return Transform(value, protect: false);
 	}

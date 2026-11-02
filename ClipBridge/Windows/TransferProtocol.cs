@@ -67,10 +67,10 @@ internal static class TransferProtocol
         await stream.WriteAsync(SharedProtocol.Frame(SharedProtocol.Encrypt(key, plain)), idle.Token);
     }
     public static Task WriteJsonAsync<T>(Stream stream, byte[] key, T value, CancellationToken token) => WriteAsync(stream, key, JsonSerializer.SerializeToUtf8Bytes(value), token);
-    public static async Task<byte[]> ReadAsync(Stream stream, byte[] key, CancellationToken token, int timeoutSeconds = 30)
+    public static async Task<byte[]> ReadAsync(Stream stream, byte[] key, CancellationToken token, int timeoutSeconds = 30, byte[]? firstHeader = null)
     {
         using var idle = CancellationTokenSource.CreateLinkedTokenSource(token); idle.CancelAfter(TimeSpan.FromSeconds(timeoutSeconds));
-        byte[] header = new byte[4]; await stream.ReadExactlyAsync(header, idle.Token);
+        byte[] header = firstHeader ?? new byte[4]; if (firstHeader == null) await stream.ReadExactlyAsync(header, idle.Token);
         int size = SharedProtocol.ReadFrameLength(header);
         if (size < 28 || size > MaxControlBytes + 28) throw new InvalidDataException("Invalid frame size");
         byte[] data = new byte[size]; await stream.ReadExactlyAsync(data, idle.Token);

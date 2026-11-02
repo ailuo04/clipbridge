@@ -17,6 +17,7 @@ internal sealed class SyncNode : IDisposable
 {
     private sealed record Peer(IPEndPoint EndPoint, DateTimeOffset LastSeen, bool Manual = false, string Name = "");
     private readonly byte[] _key;
+    private readonly DeviceHub? _hub;
     private readonly string _pairingKeyText;
     private readonly string _deviceId = Guid.NewGuid().ToString("N");
     private readonly ConcurrentDictionary<string, Peer> _peers = new();
@@ -31,8 +32,10 @@ internal sealed class SyncNode : IDisposable
     public event Action<string>? RemoteTextReceived;
     public event Action<string>? StatusChanged;
 
-    public SyncNode(byte[] pairingKey, Action<Action> dispatchToUi, int textPort = SharedProtocol.TcpPort, bool discovery = true)
+    public SyncNode(byte[] pairingKey, Action<Action> dispatchToUi, int textPort = SharedProtocol.TcpPort, bool discovery = true, DeviceHub? hub = null)
     {
+        _hub = hub;
+        _deviceId = hub?.DeviceId ?? _deviceId;
         _key = SharedProtocol.DeriveKey(pairingKey);
         _pairingKeyText = Convert.ToHexString(pairingKey);
         _dispatchToUi = dispatchToUi;
@@ -47,6 +50,12 @@ internal sealed class SyncNode : IDisposable
         catch { _udp.Dispose(); _tcpListener.Stop(); throw; }
         if (discovery) { _ = ReceiveAnnouncementsAsync(_stop.Token); _ = AnnounceLoopAsync(_stop.Token); }
         _ = AcceptLoopAsync(_stop.Token);
+    }
+
+    public void DiscoveredLegacy(Announcement a, IPAddress host)
+    {
+        if (_peers.Count < 32 || _peers.ContainsKey(a.DeviceId))
+            _peers[a.DeviceId] = new Peer(new IPEndPoint(host, SharedProtocol.TcpPort), DateTimeOffset.UtcNow, false, (a.Name ?? "配对设备").Substring(0, Math.Min((a.Name ?? "配对设备").Length, 80)));
     }
 
     public void AddManualPeer(IPAddress address)
@@ -66,7 +75,9 @@ internal sealed class SyncNode : IDisposable
     public PeerSnapshot[] GetPeerSnapshots()
     {
         var now = DateTimeOffset.UtcNow;
-        return _peers.Values.ToArray().GroupBy(p => p.EndPoint).Select(group =>
+        var visible = _peers.Values.ToList();
+        if (_hub != null) visible.AddRange(_hub.Devices().Where(p => p.Authenticated).Select(p => new Peer(new IPEndPoint(IPAddress.Parse(p.Address), SharedProtocol.TcpPort), DateTimeOffset.FromUnixTimeMilliseconds(p.Seen), false, p.Name)));
+        return visible.ToArray().GroupBy(p => p.EndPoint).Select(group =>
         {
             Peer? peer = group.Where(p => !p.Manual).OrderByDescending(p => p.LastSeen).FirstOrDefault();
             bool manual = group.Any(p => p.Manual);
@@ -89,7 +100,8 @@ internal sealed class SyncNode : IDisposable
             using var client = new TcpClient(AddressFamily.InterNetwork);
             await client.ConnectAsync(address, port, deadline.Token);
             var message = new ClipboardMessage("clipboard", Guid.NewGuid().ToString("N"), _deviceId, text, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
-            byte[] frame = SharedProtocol.Frame(SharedProtocol.Encrypt(_key, SharedProtocol.Serialize(message)));
+            byte[] key = _hub == null ? _key : await _hub.OutgoingAsync(client.GetStream(), address, 1, _key, deadline.Token);
+            byte[] frame = SharedProtocol.Frame(SharedProtocol.Encrypt(key, SharedProtocol.Serialize(message)));
             await client.GetStream().WriteAsync(frame, deadline.Token);
             Report("文字已发送，接收结果请在目标设备确认");
             return true;
@@ -178,15 +190,16 @@ internal sealed class SyncNode : IDisposable
             try
             {
                 var stream = client.GetStream();
-                byte[] header = new byte[4];
-                await stream.ReadExactlyAsync(header, deadline.Token);
+                var route = _hub == null ? new SessionRoute(_key, null, null) : await _hub.IncomingAsync(stream, 1, _key, deadline.Token);
+                byte[] header = route.Prefix ?? new byte[4];
+                if (route.Prefix == null) await stream.ReadExactlyAsync(header, deadline.Token);
                 int size = SharedProtocol.ReadFrameLength(header);
                 if (size < 28 || size > SharedProtocol.MaxFrameBytes) return;
                 byte[] frame = new byte[size];
                 await stream.ReadExactlyAsync(frame, deadline.Token);
-                var m = JsonSerializer.Deserialize<ClipboardMessage>(SharedProtocol.Decrypt(_key, frame));
-                if (m == null || m.Type != "clipboard" || m.OriginDeviceId == _deviceId || string.IsNullOrEmpty(m.MessageId) || m.MessageId.Length > 64 || string.IsNullOrEmpty(m.OriginDeviceId) || m.OriginDeviceId.Length > 64 || string.IsNullOrEmpty(m.Text) || Encoding.UTF8.GetByteCount(m.Text) > SharedProtocol.MaxTextBytes || !SharedProtocol.IsFresh(m.TimestampUtc) || string.Equals(m.Text.Trim(), _pairingKeyText, StringComparison.OrdinalIgnoreCase) || !RememberMessage(m.MessageId)) return;
-                _dispatchToUi(() => { if (!_disposed) RemoteTextReceived?.Invoke(m.Text); });
+                var m = JsonSerializer.Deserialize<ClipboardMessage>(SharedProtocol.Decrypt(route.Key, frame));
+                if (m == null || m.Type != "clipboard" || (route.Source != null && route.Source != m.OriginDeviceId) || m.OriginDeviceId == _deviceId || string.IsNullOrEmpty(m.MessageId) || m.MessageId.Length > 64 || string.IsNullOrEmpty(m.OriginDeviceId) || m.OriginDeviceId.Length > 64 || string.IsNullOrEmpty(m.Text) || Encoding.UTF8.GetByteCount(m.Text) > SharedProtocol.MaxTextBytes || !SharedProtocol.IsFresh(m.TimestampUtc) || string.Equals(m.Text.Trim(), _pairingKeyText, StringComparison.OrdinalIgnoreCase) || !RememberMessage(m.MessageId)) return;
+                _dispatchToUi(() => { if (!_disposed && (route.Source == null || _hub!.IsTrusted(route.Source))) RemoteTextReceived?.Invoke(m.Text); });
             }
             catch (Exception ex) when (ex is IOException || ex is SocketException || ex is CryptographicException || ex is JsonException || ex is OperationCanceledException)
             { if (!token.IsCancellationRequested) Report("一条文字未能接收，请检查配对和网络"); }

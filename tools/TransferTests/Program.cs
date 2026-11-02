@@ -66,10 +66,11 @@ internal static class Program
         {
             await File.WriteAllTextAsync(Path.Combine(directory, "server.json"), System.Text.Json.JsonSerializer.Serialize(new { receivePort = node.Port, controlPort = ((IPEndPoint)control.LocalEndpoint).Port }));
             Console.WriteLine("INTEROP READY " + directory);
-            using var timeout = new CancellationTokenSource(TimeSpan.FromMinutes(10));
+            using var timeout = new CancellationTokenSource(TimeSpan.FromMinutes(15));
             using var client = await control.AcceptTcpClientAsync(timeout.Token);
-            byte[] portBytes = new byte[4]; await client.GetStream().ReadExactlyAsync(portBytes, timeout.Token);
-            int port = System.Buffers.Binary.BinaryPrimitives.ReadInt32BigEndian(portBytes);
+            byte[] portBytes = new byte[8]; await client.GetStream().ReadExactlyAsync(portBytes, timeout.Token);
+            if (!portBytes.AsSpan(0,4).SequenceEqual(Encoding.ASCII.GetBytes("CBIT"))) throw new IOException("Unexpected interoperability control client");
+            int port = System.Buffers.Binary.BinaryPrimitives.ReadInt32BigEndian(portBytes.AsSpan(4,4));
             await node.SendAsync(IPAddress.Loopback, new[] { text, empty }, timeout.Token, port);
             Check(File.ReadAllText(Path.Combine(output, "来自手机.txt")) == "Kotlin → C# 中文🙂", "Kotlin sender to production C# receiver");
             Console.WriteLine("BIDIRECTIONAL JVM DOTNET INTEROP PASSED");
@@ -108,7 +109,12 @@ internal static class Program
 
     static async Task RunAsync(string[] args)
     {
+        if (args.Length == 1 && args[0] == "--pair-security") { await ExperienceTests.SessionCollisionAsync(); return; }
+        if (args.Length == 2 && args[0] == "--experience-interop") { await ExperienceInterop.RunAsync(args[1]); return; }
         if (args.Length == 2 && args[0] == "--interop") { await InteropServerAsync(args[1]); return; }
+        ExperienceTests.Run();
+        await ExperienceTests.PairingRoundtripAsync();
+        await ExperienceTests.SessionCollisionAsync();
         byte[] pairing = Enumerable.Range(0, 32).Select(i => (byte)i).ToArray();
         byte[] key = SharedProtocol.DeriveKey(pairing);
         Check(Convert.ToHexString(key).ToLowerInvariant() == "d9202a642d557b019c9620bd24781958a89e4a95543e9352576a9839fb72871b", "cross-platform key vector");

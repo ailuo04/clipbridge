@@ -7,12 +7,17 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
-    <application android:icon="@drawable/ic_clipbridge" android:allowBackup="false" android:label="互传 ClipBridge" android:theme="@android:style/Theme.Material.Light.NoActionBar" android:supportsRtl="true" android:usesCleartextTraffic="false">
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+    <uses-permission android:name="android.permission.ACCESS_LOCAL_NETWORK" />
+    <application android:icon="@drawable/ic_clipbridge" android:allowBackup="false" android:fullBackupContent="false" android:dataExtractionRules="@xml/data_extraction_rules" android:label="互传 ClipBridge" android:theme="@style/AppTheme" android:supportsRtl="true" android:usesCleartextTraffic="false">
         <activity android:name=".MainActivity" android:exported="true" android:launchMode="singleTop">
             <intent-filter><action android:name="android.intent.action.MAIN"/><category android:name="android.intent.category.LAUNCHER"/></intent-filter>
             <intent-filter><action android:name="android.intent.action.SEND"/><category android:name="android.intent.category.DEFAULT"/><data android:mimeType="*/*"/></intent-filter>
             <intent-filter><action android:name="android.intent.action.SEND_MULTIPLE"/><category android:name="android.intent.category.DEFAULT"/><data android:mimeType="*/*"/></intent-filter>
         </activity>
+        <service android:name=".updates.UpdateJobService" android:permission="android.permission.BIND_JOB_SERVICE" android:exported="true" />
+        <provider android:name=".updates.UpdateProvider" android:authorities="app.clipbridge.updates" android:exported="false" android:grantUriPermissions="true" />
         <service android:name=".network.BridgeService" android:exported="false" android:foregroundServiceType="connectedDevice" />
     </application>
 </manifest>
