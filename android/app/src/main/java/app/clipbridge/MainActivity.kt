@@ -5,6 +5,7 @@ import android.app.Activity
 import android.app.AlertDialog
 import android.content.ClipData
 import android.content.ClipboardManager
+import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.content.res.Configuration
@@ -44,9 +45,17 @@ class MainActivity : Activity() {
     private var filter=0
     private data class Target(val id: String,val name: String,val address: String,val online: Boolean)
     private val tick=object : Runnable { override fun run() { refresh(); handler.postDelayed(this,1000) } }
+    override fun attachBaseContext(base: Context) {
+        val mode=base.getSharedPreferences("interface",Context.MODE_PRIVATE).getInt("theme",0)
+        if(mode==1 || mode==2) {
+            val config=Configuration(base.resources.configuration).apply {
+                uiMode=(uiMode and Configuration.UI_MODE_NIGHT_MASK.inv()) or
+                    (if(mode==1) Configuration.UI_MODE_NIGHT_NO else Configuration.UI_MODE_NIGHT_YES)
+            }
+            super.attachBaseContext(base.createConfigurationContext(config))
+        } else super.attachBaseContext(base)
+    }
     override fun onCreate(savedInstanceState: Bundle?) {
-        val mode=prefs.getInt("theme",0)
-        if(mode!=0) applyOverrideConfiguration(Configuration().apply { uiMode=if(mode==1) Configuration.UI_MODE_NIGHT_NO else Configuration.UI_MODE_NIGHT_YES })
         super.onCreate(savedInstanceState)
         store=PairingStore(this); ui=BridgeUi(this); updates=UpdateRepository.get(this)
         page=savedInstanceState?.getInt("page") ?: 0; selected=prefs.getString("selected","") ?: ""
