@@ -32,6 +32,7 @@ internal sealed class DeviceHub : IDisposable
     private readonly UdpClient _udp;
     private readonly TcpListener _pairing;
     private readonly CancellationTokenSource _stop = new();
+    private readonly DiscoveryWake _wake = new();
     private readonly SemaphoreSlim _slots = new(4);
     private readonly ConcurrentDictionary<string,long> _replay = new(), _pairRate = new();
     private readonly ConcurrentDictionary<TcpClient,byte> _clients = new();
@@ -42,6 +43,7 @@ internal sealed class DeviceHub : IDisposable
     private readonly PairingSessions<PairingRequest> _sessions=new();
     public ConcurrentDictionary<string,PairingRequest> Pending => _sessions.Pending;
     public event Action<string>? Status;
+    public event Action? PairingRequested;
     public event Action<Announcement,IPAddress>? LegacyDiscovered;
     public string DeviceId => _store.DeviceId;
     public int PairingPort => ((IPEndPoint)_pairing.LocalEndpoint).Port;
@@ -51,8 +53,11 @@ internal sealed class DeviceHub : IDisposable
         _udp.Client.Bind(new IPEndPoint(discovery ? IPAddress.Any : IPAddress.Loopback, discovery ? SharedProtocol.DiscoveryPort : 0));
         _pairing=new TcpListener(discovery ? IPAddress.Any : IPAddress.Loopback,pairingPort);
         try { _pairing.Start(4); } catch { _udp.Dispose(); throw; }
-        if(discovery) { _=ReceiveAsync(); _=AnnounceAsync(); } _=AcceptPairsAsync();
+        if(discovery) { NetworkChange.NetworkAddressChanged+=OnNetworkAddressChanged; NetworkChange.NetworkAvailabilityChanged+=OnNetworkAvailabilityChanged; _=ReceiveAsync(); _=AnnounceAsync(); } _=AcceptPairsAsync();
     }
+    public void RefreshDiscovery() => _wake.Signal();
+    private void OnNetworkAddressChanged(object? sender, EventArgs args) => RefreshDiscovery();
+    private void OnNetworkAvailabilityChanged(object? sender, NetworkAvailabilityEventArgs args) => RefreshDiscovery();
     public NearbyDevice[] Devices() => Nearby.Values.OrderByDescending(x=>x.Authenticated).ThenBy(x=>x.Name).ToArray();
     public DeviceTrust[] Trusted() => _store.Records();
     public bool IsTrusted(string id) => _store.Records().Any(t => t.Id == id && t.Active);
@@ -79,7 +84,7 @@ internal sealed class DeviceHub : IDisposable
                 byte[] legacy=SharedProtocol.Encrypt(SharedProtocol.DeriveKey(_legacy),SharedProtocol.Serialize(new Announcement("announce",DeviceId,_store.Name,SharedProtocol.TcpPort,now)));
                 foreach(var host in Broadcasts()) { try { await SendAsync(legacy,host); } catch(SocketException){} }
             } catch(Exception e) when(e is SocketException or NetworkInformationException or IOException) { Status?.Invoke("网络发现暂不可用，请检查同一 Wi-Fi、热点与防火墙"); }
-            await Task.Delay(3000,_stop.Token);
+            await _wake.WaitAsync(3000,_stop.Token);
         }} catch(OperationCanceledException){} catch(ObjectDisposedException){}
     }
     private async Task ReceiveAsync()
@@ -113,7 +118,7 @@ internal sealed class DeviceHub : IDisposable
                     if(trust!=null) await SendAsync(DiscoveryProtocol.Encode(DiscoveryProtocol.Create(DeviceId,_store.Name,"windows",trust.Id,trust.Key)),host);
                 }
             }
-            catch(Exception e) when(e is CryptographicException or JsonException or IOException or ArgumentException or InvalidOperationException or System.Collections.Generic.KeyNotFoundException){}
+            catch(Exception e) when(e is InvalidDataException or CryptographicException or JsonException or IOException or ArgumentException or InvalidOperationException or System.Collections.Generic.KeyNotFoundException){}
             catch(SocketException) { await Task.Delay(500,_stop.Token); }
         }} catch(OperationCanceledException){} catch(ObjectDisposedException){}
     }
@@ -153,8 +158,18 @@ internal sealed class DeviceHub : IDisposable
         if(!_slots.Wait(0)) { Status?.Invoke("已有配对请求，请稍后重试"); return; }
         using var client=new TcpClient(AddressFamily.InterNetwork); _clients[client]=0;
         using var deadline=CancellationTokenSource.CreateLinkedTokenSource(_stop.Token); deadline.CancelAfter(120000);
-        try { await client.ConnectAsync(IPAddress.Parse(peer.Address),port,deadline.Token); await PairSessionAsync(client,true,PairingProtocol.ValidId(peer.Id)?peer.Id:null,deadline.Token); }
-        catch(Exception e) when(e is IOException or SocketException or CryptographicException or JsonException or OperationCanceledException or ArgumentException or InvalidOperationException or System.Collections.Generic.KeyNotFoundException) { Status?.Invoke("配对未完成，请核对验证码并重试"); }
+        try
+        {
+            using(var connect=CancellationTokenSource.CreateLinkedTokenSource(deadline.Token))
+            {
+                connect.CancelAfter(5000);
+                try { await client.ConnectAsync(IPAddress.Parse(peer.Address),port,connect.Token); }
+                catch(Exception e) when(e is SocketException or OperationCanceledException)
+                { if(!_stop.IsCancellationRequested) Status?.Invoke(PairingErrors.Connect(e)); return; }
+            }
+            await PairSessionAsync(client,true,PairingProtocol.ValidId(peer.Id)?peer.Id:null,deadline.Token);
+        }
+        catch(Exception e) when(e is InvalidDataException or IOException or SocketException or CryptographicException or JsonException or OperationCanceledException or ArgumentException or InvalidOperationException or System.Collections.Generic.KeyNotFoundException) { Status?.Invoke("配对未完成，可能是对方取消或连接中断，请重试"); }
         finally { _clients.TryRemove(client,out _); _slots.Release(); }
     }
     private async Task AcceptPairsAsync()
@@ -166,7 +181,7 @@ internal sealed class DeviceHub : IDisposable
             foreach(var p in _pairRate) if(now-p.Value>30000) _pairRate.TryRemove(p.Key,out _);
             if(client.Client.RemoteEndPoint is not IPEndPoint ep || !SharedProtocol.IsLocalAddress(ep.Address) || _pairRate.Count>=128 || (_pairRate.TryGetValue(ep.Address.ToString(),out long last) && now-last<5000) || !_slots.Wait(0)) { client.Dispose(); continue; }
             _pairRate[ep.Address.ToString()]=now; _clients[client]=0;
-            _=Task.Run(async()=> { using(client) using(var timeout=CancellationTokenSource.CreateLinkedTokenSource(_stop.Token)) { timeout.CancelAfter(120000); try { await PairSessionAsync(client,false,null,timeout.Token); } catch(Exception e) when(e is IOException or SocketException or CryptographicException or JsonException or OperationCanceledException or ArgumentException or InvalidOperationException or System.Collections.Generic.KeyNotFoundException) { Status?.Invoke("一项配对已取消或超时"); } finally { _clients.TryRemove(client,out _); _slots.Release(); } } });
+            _=Task.Run(async()=> { using(client) using(var timeout=CancellationTokenSource.CreateLinkedTokenSource(_stop.Token)) { timeout.CancelAfter(120000); try { await PairSessionAsync(client,false,null,timeout.Token); } catch(Exception e) when(e is InvalidDataException or IOException or SocketException or CryptographicException or JsonException or OperationCanceledException or ArgumentException or InvalidOperationException or System.Collections.Generic.KeyNotFoundException) { Status?.Invoke("一项配对已取消或超时"); } finally { _clients.TryRemove(client,out _); _slots.Release(); } } });
         }} catch(OperationCanceledException){} catch(ObjectDisposedException){} catch(SocketException){}
     }
     private static async Task WriteAsync(Stream stream,object value,CancellationToken token,byte[]? key=null)
@@ -212,6 +227,7 @@ internal sealed class DeviceHub : IDisposable
             var decision=new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
             request=new(session,remoteId,remoteName,address,PairingProtocol.Code(key,transcript),DateTimeOffset.UtcNow.AddSeconds(100),decision);
             _sessions.Publish(session,sessionOwner,request);
+            PairingRequested?.Invoke();
             Status?.Invoke("有设备等待配对，请主动打开设备配对页核对验证码");
             using var wait=CancellationTokenSource.CreateLinkedTokenSource(token); wait.CancelAfter(100000);
             bool accepted=await decision.Task.WaitAsync(wait.Token);
@@ -245,5 +261,5 @@ internal sealed class DeviceHub : IDisposable
         finally { if(reserved) _pairIds.TryRemove(remoteId,out _); if(sessionReserved) _sessions.Release(session,sessionOwner,request); if(key!=null) CryptographicOperations.ZeroMemory(key); }
     }
     private void SavePair(DeviceTrust record,int epoch) { lock(_trustGate) { if (_epochs.GetOrAdd(record.Id,0)!=epoch) throw new IOException("配对已撤销"); _store.Save(record); } }
-    public void Dispose() { _stop.Cancel(); _udp.Dispose(); _pairing.Stop(); foreach(var p in Pending.Values) p.Decision.TrySetResult(false); foreach(var c in _clients.Keys) c.Dispose(); }
+    public void Dispose() { NetworkChange.NetworkAddressChanged-=OnNetworkAddressChanged; NetworkChange.NetworkAvailabilityChanged-=OnNetworkAvailabilityChanged; _stop.Cancel(); _udp.Dispose(); _pairing.Stop(); foreach(var p in Pending.Values) p.Decision.TrySetResult(false); foreach(var c in _clients.Keys) c.Dispose(); _wake.Dispose(); }
 }

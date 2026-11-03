@@ -7,6 +7,9 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.net.Uri
+import android.net.ConnectivityManager
+import android.net.LinkProperties
+import android.net.Network
 import android.net.wifi.WifiManager
 import android.os.IBinder
 import app.clipbridge.MainActivity
@@ -37,6 +40,8 @@ class BridgeService : Service() {
     private var textListener: ServerSocket?=null
     private var fileListener: ServerSocket?=null
     private var multicast: WifiManager.MulticastLock?=null
+    private var networkCallback: ConnectivityManager.NetworkCallback?=null
+    private val networkCallbackGate=Any()
     private var pairing: ByteArray?=null
     private var textKey: ByteArray?=null
     private lateinit var store: PairingStore
@@ -62,6 +67,7 @@ class BridgeService : Service() {
             textListener=ServerSocket().apply { reuseAddress=true; bind(InetSocketAddress(BridgeProtocol.TEXT_PORT)) }
             fileListener=ServerSocket().apply { reuseAddress=true; bind(InetSocketAddress(FileProtocol.PORT)) }
             hub=DeviceHub(store,pairing,{ p -> if(peers.size<32 || peers.containsKey(p.address)) peers[p.address]=p },::setStatus)
+            runCatching { watchNetworkChanges() }
             files=FileTransfers(this,pairing,store.deviceId(),{ p ->
                 transfers[p.id]=p
                 if(transfers.size>200) transfers.entries.firstOrNull { it.value.state !in listOf("传输中","准备文件","等待对方接受") && !pending.containsKey(it.key) }?.let { transfers.remove(it.key) }
@@ -70,6 +76,15 @@ class BridgeService : Service() {
             workers.execute { acceptLoop(textListener!!,false) }; workers.execute { acceptLoop(fileListener!!,true) }
             setStatus("正在搜索同一网络里的设备")
         } catch(e: Exception) { setStatus("连接服务启动失败："+(e.message ?: e.javaClass.simpleName)); running.set(false); closeNetwork(); stopSelf() }
+    }
+    private fun watchNetworkChanges() {
+        val manager=getSystemService(ConnectivityManager::class.java)
+        val callback=object : ConnectivityManager.NetworkCallback() {
+            override fun onAvailable(network: Network) { hub?.refreshDiscovery() }
+            override fun onLost(network: Network) { hub?.refreshDiscovery() }
+            override fun onLinkPropertiesChanged(network: Network, properties: LinkProperties) { hub?.refreshDiscovery() }
+        }
+        synchronized(networkCallbackGate) { if(!running.get()) return; manager.registerDefaultNetworkCallback(callback); networkCallback=callback }
     }
     private fun acceptLoop(listener: ServerSocket,file: Boolean) {
         while(running.get()) {
@@ -124,6 +139,7 @@ class BridgeService : Service() {
     fun receivedFiles(id: String): List<Uri> = if(::files.isInitialized) files.received[id] ?: emptyList() else emptyList()
     fun cancel(id: String) { pending[id]?.decision?.complete(false); if(::files.isInitialized) files.cancel(id) }
     private fun closeNetwork() {
+        synchronized(networkCallbackGate) { networkCallback?.let { callback -> runCatching { getSystemService(ConnectivityManager::class.java).unregisterNetworkCallback(callback) } }; networkCallback=null }
         runCatching { hub?.close() }; hub=null; runCatching { textListener?.close() }; runCatching { fileListener?.close() }
         sockets.forEach { runCatching { it.close() } }; sockets.clear(); if(::files.isInitialized) files.stop()
         pending.values.forEach { it.decision.complete(false) }; pending.clear(); runCatching { multicast?.takeIf { it.isHeld }?.release() }

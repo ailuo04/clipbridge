@@ -54,6 +54,8 @@ Source: "{#BuildDir}\ClipBridge.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#BuildDir}\ClipBridge.dll"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#BuildDir}\ClipBridge.deps.json"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#BuildDir}\ClipBridge.runtimeconfig.json"; DestDir: "{app}"; Flags: ignoreversion
+Source: "{#BuildDir}\QRCoder.dll"; DestDir: "{app}"; Flags: ignoreversion
+Source: "{#BuildDir}\QRCoder-LICENSE.txt"; DestDir: "{app}"; Flags: ignoreversion
 
 [Dirs]
 Name: "{app}"; Permissions: users-modify

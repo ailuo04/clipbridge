@@ -54,7 +54,7 @@ try {
     Add-Type -AssemblyName System.IO.Compression.FileSystem
     $archive = [IO.Compression.ZipFile]::Open($zipPath, [IO.Compression.ZipArchiveMode]::Create)
     try {
-        foreach ($name in @('ClipBridge.exe', 'ClipBridge.dll', 'ClipBridge.deps.json', 'ClipBridge.runtimeconfig.json')) {
+        foreach ($name in @('ClipBridge.exe', 'ClipBridge.dll', 'ClipBridge.deps.json', 'ClipBridge.runtimeconfig.json', 'QRCoder.dll', 'QRCoder-LICENSE.txt')) {
             [IO.Compression.ZipFileExtensions]::CreateEntryFromFile($archive, (Join-Path $build $name), $name, [IO.Compression.CompressionLevel]::Optimal) | Out-Null
         }
     } finally { $archive.Dispose() }

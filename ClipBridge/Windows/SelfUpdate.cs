@@ -97,6 +97,11 @@ internal static class SelfUpdate
 		string text4 = Path.Combine(text3, "ClipBridge.dll");
 		File.Copy(location, text4);
 		File.Copy(text2, Path.Combine(text3, "ClipBridge.runtimeconfig.json"));
+        foreach (string dependency in new[] { "ClipBridge.deps.json", "QRCoder.dll" })
+        {
+            string source = Path.Combine(text, dependency);
+            if (File.Exists(source)) File.Copy(source, Path.Combine(text3, dependency));
+        }
 		string runtimeDirectory = System.Runtime.InteropServices.RuntimeEnvironment.GetRuntimeDirectory();
 		string? dotnetRoot = new DirectoryInfo(runtimeDirectory).Parent?.Parent?.Parent?.FullName;
 		string text5 = Path.Combine(dotnetRoot ?? string.Empty, "dotnet.exe");

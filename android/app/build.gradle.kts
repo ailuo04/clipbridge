@@ -3,7 +3,7 @@ android {
     namespace = "app.clipbridge"
     compileSdk = 36
     buildToolsVersion = "36.0.0"
-    defaultConfig { applicationId = "app.clipbridge"; minSdk = 29; targetSdk = 36; versionCode = 50100; versionName = "0.5.1" }
+    defaultConfig { applicationId = "app.clipbridge"; minSdk = 29; targetSdk = 36; versionCode = 50200; versionName = "0.5.2" }
     val releaseKeystore = providers.environmentVariable("CLIPBRIDGE_ANDROID_KEYSTORE_PATH").orNull
     if (releaseKeystore != null) {
         signingConfigs {
@@ -20,7 +20,13 @@ android {
     kotlinOptions { jvmTarget = "17" }
     testOptions { unitTests.isReturnDefaultValues = true }
 }
-dependencies { testImplementation("junit:junit:4.13.2"); testImplementation("org.json:json:20240303") }
+dependencies {
+    implementation("androidx.core:core:1.13.1")
+    implementation("com.journeyapps:zxing-android-embedded:4.3.0")
+    implementation("com.google.zxing:core:3.5.3")
+    testImplementation("junit:junit:4.13.2")
+    testImplementation("org.json:json:20240303")
+}
 
 tasks.withType<org.gradle.api.tasks.testing.Test>().configureEach {
     inputs.property("clipbridgeLegacyInterop", providers.environmentVariable("CLIPBRIDGE_INTEROP_DIR").orElse(""))

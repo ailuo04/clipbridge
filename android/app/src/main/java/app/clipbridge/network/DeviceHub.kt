@@ -19,6 +19,7 @@ class DeviceHub(private val store: PairingStore,private val legacy: ByteArray?,p
     private val sessions=PairingSessions<PairingRequest>()
     val pending get()=sessions.pending
     private val running = AtomicBoolean(true)
+    private val wake = DiscoveryWake()
     private val workers = Executors.newCachedThreadPool()
     private val sockets = ConcurrentHashMap.newKeySet<Socket>()
     private val replay = ConcurrentHashMap<String,Long>()
@@ -40,6 +41,7 @@ class DeviceHub(private val store: PairingStore,private val legacy: ByteArray?,p
     private fun send(data: ByteArray,host: String) { udp.send(DatagramPacket(data,data.size,InetAddress.getByName(host),BridgeProtocol.DISCOVERY_PORT)) }
     private fun publicBytes() = DiscoveryProtocol.encode(DiscoveryProtocol.create(store.deviceId(),store.name(),"android"))
     private fun broadcasts(): List<String> = NetworkInterface.getNetworkInterfaces().toList().filter { it.isUp && !it.isLoopback }.flatMap { it.interfaceAddresses }.mapNotNull { it.broadcast?.hostAddress }.plus("255.255.255.255").distinct()
+    fun refreshDiscovery() { wake.signal() }
     private fun announceLoop() {
         while(running.get()) {
             runCatching {
@@ -51,7 +53,7 @@ class DeviceHub(private val store: PairingStore,private val legacy: ByteArray?,p
                     broadcasts().plus(store.peer()).filter { it.isNotBlank() }.forEach { runCatching { send(old,it) } }
                 }
             }.onFailure { status("搜索暂不可用，请检查同一 Wi-Fi 或热点与网络权限") }
-            try { Thread.sleep(3000) } catch(_: InterruptedException) { return }
+            try { wake.await(3000) } catch(_: InterruptedException) { return }
         }
     }
     private fun discover() {
@@ -102,13 +104,32 @@ class DeviceHub(private val store: PairingStore,private val legacy: ByteArray?,p
     fun isTrusted(id: String) = store.records().any { it.id==id && it.active }
     fun decide(request: PairingRequest,accept: Boolean) { if(sessions.isCurrent(request.session,request) && System.currentTimeMillis()<request.expires) request.decision.complete(accept) }
     fun revoke(id: String) { synchronized(trustGate) { epochs[id]=(epochs[id] ?: 0)+1; store.remove(id) }; nearby.remove(id); pending.values.filter { it.id==id }.forEach { it.decision.complete(false) }; revoked?.invoke(id) }
+    fun pairInvitation(invitation: PairingInvitation): Boolean {
+        val trust=store.records().firstOrNull { it.id==invitation.deviceId && it.active }
+        if(trust==null) {
+            pair(NearbyDevice(invitation.deviceId,"扫描的电脑","windows",invitation.address,0,false))
+            return true
+        }
+        workers.execute {
+            try {
+                send(publicBytes(),invitation.address)
+                send(DiscoveryProtocol.encode(DiscoveryProtocol.create(store.deviceId(),store.name(),"android",trust.id,trust.key)),invitation.address)
+                status("设备已配对，正在重新连接")
+            } catch(e: Exception) { status(PairingErrors.connect(e)) }
+        }
+        return false
+    }
     fun pairAddress(host: String) { require(BridgeProtocol.isLocal(host)) { "请输入局域网 IPv4 地址" }; pair(NearbyDevice("",host,"windows",host,0,false)) }
     fun pair(peer: NearbyDevice) {
         check(slots.tryAcquire()) { "已有配对请求，请稍后重试" }
         workers.execute {
             Socket().use { socket -> sockets.add(socket)
-                try { socket.connect(InetSocketAddress(peer.address,PairingProtocol.PORT),5000); socket.soTimeout=120000; pairSession(socket,true,peer.id.takeIf(PairingProtocol::validId)) }
-                catch(_: Exception) { status("配对未完成，请核对验证码并重试") }
+                try {
+                    try { socket.connect(InetSocketAddress(peer.address,PairingProtocol.PORT),5000) }
+                    catch(e: Exception) { status(PairingErrors.connect(e)); return@execute }
+                    socket.soTimeout=120000; pairSession(socket,true,peer.id.takeIf(PairingProtocol::validId))
+                }
+                catch(_: Exception) { status("配对未完成，可能是对方取消或连接中断，请重试") }
                 finally { sockets.remove(socket); slots.release() }
             }
         }

@@ -20,10 +20,12 @@ internal static class ExperienceTests
     {
         var a=new Store(); var b=new Store(); byte[] legacy=RandomNumberGenerator.GetBytes(32);
         using var ah=new DeviceHub(a,legacy,0,false); using var bh=new DeviceHub(b,legacy,0,false);
+        int aNotified=0,bNotified=0; ah.PairingRequested+=()=>System.Threading.Interlocked.Increment(ref aNotified); bh.PairingRequested+=()=>System.Threading.Interlocked.Increment(ref bNotified);
         var peer=new NearbyDevice(b.DeviceId,b.Name,"windows","127.0.0.1",DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),false);
         var task=ah.PairAsync(peer,bh.PairingPort);
         for(int n=0;n<250 && (ah.Pending.IsEmpty || bh.Pending.IsEmpty);n++) await System.Threading.Tasks.Task.Delay(20);
         Program.Check(ah.Pending.Count==1 && bh.Pending.Count==1,"both pairing coordinators expose explicit pending decisions");
+        Program.Check(aNotified==1 && bNotified==1,"both devices notify the UI when a confirmation becomes available");
         var ar=ah.Pending.Values.Single(); var br=bh.Pending.Values.Single();
         Program.Check(ar.Code==br.Code && a.Records().Length==0 && b.Records().Length==0,"no trust before user verification on either endpoint");
         ah.Decide(ar,true); await System.Threading.Tasks.Task.Delay(80);
@@ -65,6 +67,32 @@ internal static class ExperienceTests
         ch.Decide(ch.Pending.Values.Single(),true); dh.Decide(dh.Pending.Values.Single(),false);
         await refused.WaitAsync(TimeSpan.FromSeconds(5));
         Program.Check(c.Records().Length==0 && d.Records().Length==0,"a refused pairing cannot persist trust");
+    }
+    public static async System.Threading.Tasks.Task MalformedDiscoveryAsync()
+    {
+        var store=new Store(); using var hub=new DeviceHub(store,RandomNumberGenerator.GetBytes(32),0,false);
+        var field=typeof(DeviceHub).GetField("_udp",System.Reflection.BindingFlags.NonPublic|System.Reflection.BindingFlags.Instance)!;
+        var socket=(System.Net.Sockets.UdpClient)field.GetValue(hub)!;
+        int port=((System.Net.IPEndPoint)socket.Client.LocalEndPoint!).Port;
+        var method=typeof(DeviceHub).GetMethod("ReceiveAsync",System.Reflection.BindingFlags.NonPublic|System.Reflection.BindingFlags.Instance)!;
+        var receive=(System.Threading.Tasks.Task)method.Invoke(hub,null)!;
+        using var sender=new System.Net.Sockets.UdpClient(System.Net.Sockets.AddressFamily.InterNetwork);
+        var stale=DiscoveryProtocol.Encode(DiscoveryProtocol.Create(Guid.NewGuid().ToString("N"),"Synthetic device","android") with { Time=1 });
+        await sender.SendAsync(stale,new System.Net.IPEndPoint(System.Net.IPAddress.Loopback,port));
+        await System.Threading.Tasks.Task.Delay(250);
+        Program.Check(!receive.IsCompleted,"a malformed discovery packet does not terminate future searches");
+        hub.Dispose();
+        await receive.WaitAsync(TimeSpan.FromSeconds(3));
+    }
+    public static async System.Threading.Tasks.Task PairingIdentityMismatchAsync()
+    {
+        var a=new Store(); var b=new Store(); byte[] legacy=RandomNumberGenerator.GetBytes(32);
+        using var ah=new DeviceHub(a,legacy,0,false); using var bh=new DeviceHub(b,legacy,0,false);
+        string wrongId=Guid.NewGuid().ToString("N");
+        var task=ah.PairAsync(new NearbyDevice(wrongId,"Synthetic peer","windows","127.0.0.1",0,false),bh.PairingPort);
+        await task.WaitAsync(TimeSpan.FromSeconds(5));
+        Program.Check(ah.Pending.IsEmpty && bh.Pending.IsEmpty && a.Records().Length==0 && b.Records().Length==0,
+            "a QR-pinned identity mismatch cannot display a code or establish trust");
     }
     public static async System.Threading.Tasks.Task SessionCollisionAsync()
     {

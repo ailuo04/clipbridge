@@ -1,4 +1,7 @@
-<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android" xmlns:tools="http://schemas.android.com/tools">
+    <uses-feature android:name="android.hardware.camera" android:required="false" />
+    <uses-feature android:name="android.hardware.camera.autofocus" android:required="false" />
+    <uses-permission android:name="android.permission.CAMERA" />
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.CHANGE_NETWORK_STATE" />
@@ -16,6 +19,7 @@
             <intent-filter><action android:name="android.intent.action.SEND"/><category android:name="android.intent.category.DEFAULT"/><data android:mimeType="*/*"/></intent-filter>
             <intent-filter><action android:name="android.intent.action.SEND_MULTIPLE"/><category android:name="android.intent.category.DEFAULT"/><data android:mimeType="*/*"/></intent-filter>
         </activity>
+        <activity android:name="com.journeyapps.barcodescanner.CaptureActivity" android:exported="false" android:screenOrientation="fullSensor" tools:replace="android:screenOrientation" />
         <service android:name=".updates.UpdateJobService" android:permission="android.permission.BIND_JOB_SERVICE" android:exported="true" />
         <provider android:name=".updates.UpdateProvider" android:authorities="app.clipbridge.updates" android:exported="false" android:grantUriPermissions="true" />
         <service android:name=".network.BridgeService" android:exported="false" android:foregroundServiceType="connectedDevice" />

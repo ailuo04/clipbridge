@@ -128,7 +128,15 @@ internal sealed class TrayAppContext : ApplicationContext
 		{
 			_panel.ShowControlPanel();
 		};
-		_node.RemoteTextReceived += SetClipboardText;
+		_devices.PairingRequested += () => Dispatch(() =>
+        {
+            if (_exiting || (_devicesForm != null && _devicesForm.Visible)) return;
+            _trayIcon.BalloonTipTitle = "互传 · 设备配对";
+            _trayIcon.BalloonTipText = "有设备等待配对，点击这里核对验证码。";
+            _trayIcon.ShowBalloonTip(10000);
+        });
+        _trayIcon.BalloonTipClicked += (_, _) => { if (!_devices.Pending.IsEmpty) OpenDevices(); };
+        _node.RemoteTextReceived += SetClipboardText;
 		_node.StatusChanged += ReportStatus;
 		_themeController.ThemeChanged += OnThemeChanged;
 		_refreshTimer.Tick += (object? _, EventArgs _) =>

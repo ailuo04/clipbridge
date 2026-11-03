@@ -21,6 +21,9 @@ import android.widget.*
 import app.clipbridge.compat.PlatformCompat
 import app.clipbridge.network.*
 import app.clipbridge.protocol.BridgeProtocol
+import app.clipbridge.protocol.PairingInvitationCodec
+import com.google.zxing.client.android.Intents
+import com.journeyapps.barcodescanner.CaptureActivity
 import app.clipbridge.storage.PairingStore
 import app.clipbridge.ui.BridgeUi
 import app.clipbridge.updates.UpdateRepository
@@ -40,6 +43,8 @@ class MainActivity : Activity() {
     private var signature=""
     private var latestStatus=""
     private var resumed=false
+    private var seenPairSessions=emptySet<String>()
+    private var focusPairing=false
     private var sharedUris=emptyList<Uri>()
     private var sharedText: String?=null
     private var filter=0
@@ -61,6 +66,9 @@ class MainActivity : Activity() {
         page=savedInstanceState?.getInt("page") ?: 0; selected=prefs.getString("selected","") ?: ""
         val root=ui.column().apply { setBackgroundColor(ui.canvas) }
         notice=ui.text("主动发送，安静接收。",12f,ui.muted).apply { setPadding(ui.dp(22),ui.dp(8),ui.dp(22),ui.dp(8)); accessibilityLiveRegion=View.ACCESSIBILITY_LIVE_REGION_POLITE }
+        notice.setOnClickListener {
+            if(BridgeService.current?.hub?.pending?.isNotEmpty()==true) { page=0; focusPairing=true; signature=""; render() }
+        }
         scroll=ScrollView(this).apply { isFillViewport=true; clipToPadding=false }
         body=ui.column(22); scroll.addView(body)
         navigation=ui.row().apply { setPadding(ui.dp(12),ui.dp(8),ui.dp(12),ui.dp(8)); setBackgroundColor(ui.surface) }
@@ -75,7 +83,10 @@ class MainActivity : Activity() {
     override fun onStart() { super.onStart(); handler.post(tick) }
     override fun onResume() {
         super.onResume(); resumed=true
-        if(prefs.getBoolean("connection",true) && BridgeService.current==null && PlatformCompat.canUseLan(this)) startConnection(false)
+        if(prefs.getBoolean("connection",true) && BridgeService.current==null) {
+            if(PlatformCompat.canUseLan(this)) startConnection(false)
+            else message("请允许互传访问本地网络，然后开始搜索")
+        }
         if(updates.autoCheck()) updates.check()
         signature=""; refresh()
     }
@@ -113,16 +124,21 @@ class MainActivity : Activity() {
         val service=BridgeService.current
         if(service!=null && service.status!=latestStatus) { latestStatus=service.status; message(service.status) }
         val hub=service?.hub
+        val sessions=hub?.pending?.keys?.toSet() ?: emptySet()
+        if(resumed && page==0 && sessions.any { it !in seenPairSessions }) focusPairing=true
+        seenPairSessions=sessions
         val next=page.toString()+selected+filter+service?.status+service?.receivedText?.length+targets().joinToString { it.toString() }+hub?.nearby?.values?.sortedBy { it.id }?.joinToString { "${it.id}:${it.address}:${it.authenticated}" }+hub?.pending?.values?.joinToString { "${it.session}:${it.id}:${it.name}:${it.address}:${it.code}:${it.expires}:${it.decision.isDone}" }+service?.pending?.keys?.joinToString()+service?.transfers?.values?.joinToString()+updates.state+updates.progress+updates.ready
         if(next!=signature) { signature=next; render() }
     }
     private fun render() {
-        val oldY=scroll.scrollY; body.removeAllViews(); navigation.removeAllViews()
+        val oldY=if(focusPairing) 0 else scroll.scrollY; focusPairing=false; body.removeAllViews(); navigation.removeAllViews()
         listOf("设备","传输","设置").forEachIndexed { index,label ->
             val tab=ui.column(8).apply { gravity=Gravity.CENTER; minimumHeight=ui.dp(64); background=ui.background(if(index==page) ui.tint else ui.surface,16); isClickable=true; isFocusable=true; contentDescription=label+(if(index==page) "，已选择" else "") }
             tab.addView(ui.icon(listOf(0,3,4)[index],if(index==page) ui.primary else ui.muted),LinearLayout.LayoutParams(ui.dp(25),ui.dp(25)))
             val pending=BridgeService.current?.pending?.size ?: 0
-            tab.addView(ui.text(if(index==1 && pending>0) "$label · $pending" else label,12f,if(index==page) ui.primary else ui.muted,index==page))
+            val pairs=BridgeService.current?.hub?.pending?.size ?: 0
+            val badge=if(index==1) pending else if(index==0) pairs else 0
+            tab.addView(ui.text(if(badge>0) "$label · $badge" else label,12f,if(index==page) ui.primary else ui.muted,index==page))
             tab.setOnClickListener { page=index; signature=""; scroll.scrollTo(0,0); render() }
             navigation.addView(tab,LinearLayout.LayoutParams(0,-2,1f).apply { marginStart=ui.dp(4); marginEnd=ui.dp(4) })
         }
@@ -141,6 +157,19 @@ class MainActivity : Activity() {
             if(!request.decision.isDone) { action(card,"确认数字一致",true) { hub.decide(request,true); signature="" }; action(card,"拒绝 / 数字不一致") { hub.decide(request,false); signature="" } }
             else card.addView(ui.text("已确认，等待另一台设备…",14f,ui.green))
         }
+        if(!PlatformCompat.canUseLan(this)) {
+            val permission=ui.card(body,ui.mint)
+            permission.addView(ui.text("需要本地网络权限",17f,bold=true))
+            permission.addView(ui.text("允许后才能搜索和连接附近设备。",13f,ui.muted))
+            action(permission,"开启本地网络权限",true) { startConnection() }
+            action(permission,"打开系统权限设置") { startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS,Uri.parse("package:$packageName"))) }
+        }
+        ui.heading(body,"附近设备",if(service!=null) "正在搜索同一 Wi-Fi 或手机热点里的设备" else "连接服务已停止")
+        action(body,"扫码配对",true,block=::scanPairing)
+        val nearby=hub?.nearby?.values?.filter { p->store.records().none { it.id==p.id } }?.sortedBy { it.name } ?: emptyList()
+        nearby.forEach { peer -> val row=ui.card(body); row.addView(ui.text(peer.name,17f,bold=true)); row.addView(ui.text("${peer.platform} · ${peer.address}",12f,ui.muted)); action(row,"配对",true) { focusPairing=true; hub?.pair(peer); message("正在连接，请在两端核对验证码") } }
+        if(nearby.isEmpty()) { val empty=ui.card(body,ui.mint); empty.addView(ui.text("正在寻找附近设备",16f,ui.green,true)); empty.addView(ui.text("请打开电脑互传并连接同一网络；也可以扫描电脑上的配对二维码。",13f,ui.muted)) }
+        action(body,if(service==null) "开始搜索" else "立即重新搜索") { if(service==null) startConnection() else if(hub==null) message("连接服务正在启动，请稍候") else { hub.refreshDiscovery(); message("正在重新搜索附近设备") } }
         val current=target()
         val card=ui.card(body)
         val top=ui.row(); top.addView(ui.icon(0),LinearLayout.LayoutParams(ui.dp(45),ui.dp(45)).apply { marginEnd=ui.dp(14) })
@@ -162,12 +191,23 @@ class MainActivity : Activity() {
         if(service?.receivedText!=null) action(body,"复制最近收到的文字") { getSystemService(ClipboardManager::class.java).setPrimaryClip(ClipData.newPlainText("ClipBridge",requireService().receivedText)); message("已复制收到的文字") }
         ui.heading(body,"我的设备")
         val all=targets()
-        if(all.isEmpty()) { val empty=ui.card(body); empty.addView(ui.text("还没有配对设备",16f,bold=true)); empty.addView(ui.text("在下方选择电脑，两端确认验证码即可连接。",13f,ui.muted)) }
+        if(all.isEmpty()) { val empty=ui.card(body); empty.addView(ui.text("还没有配对设备",16f,bold=true)); empty.addView(ui.text("在附近设备中选择电脑，两端确认验证码即可连接。",13f,ui.muted)) }
         all.forEach { t -> val row=ui.card(body); row.addView(ui.text(t.name,17f,bold=true)); row.addView(ui.text((if(t.online) "已连接" else "离线")+" · "+t.address,12f,if(t.online) ui.green else ui.muted)); action(row,if(selected==t.id) "当前发送目标" else "设为发送目标",selected==t.id,t.online) { selected=t.id; prefs.edit().putString("selected",selected).apply(); signature="" } }
-        ui.heading(body,"附近设备",if(service!=null) "正在搜索同一 Wi-Fi 或手机热点里的设备" else "连接服务已停止")
-        val nearby=hub?.nearby?.values?.filter { p->store.records().none { it.id==p.id } }?.sortedBy { it.name } ?: emptyList()
-        nearby.forEach { peer -> val row=ui.card(body); row.addView(ui.text(peer.name,17f,bold=true)); row.addView(ui.text("${peer.platform} · ${peer.address}",12f,ui.muted)); action(row,"配对",true) { hub?.pair(peer); message("正在建立配对，请在两端核对验证码") } }
-        if(nearby.isEmpty()) { val empty=ui.card(body,ui.mint); empty.addView(ui.text("让两台设备连接同一网络",16f,ui.green,true)); empty.addView(ui.text("请打开电脑端新版互传。若持续找不到设备，检查 Wi-Fi 隔离、防火墙或系统本地网络权限。",13f,ui.muted)); action(empty,if(service==null) "开始搜索" else "重新搜索") { if(service==null) startConnection() else { stopConnection(); handler.postDelayed({ safe { startConnection(false) } },600) } } }
+
+    }
+    @Suppress("DEPRECATION") private fun scanPairing() {
+        if(!PlatformCompat.canUseLan(this)) { startConnection(); return }
+        requireService()
+        require(packageManager.hasSystemFeature(PackageManager.FEATURE_CAMERA_ANY)) { "此设备没有可用相机，请使用附近设备或按 IP 配对" }
+        val scan=Intent(this,CaptureActivity::class.java).apply {
+            action=Intents.Scan.ACTION
+            putExtra(Intents.Scan.FORMATS,"QR_CODE")
+            putExtra(Intents.Scan.PROMPT_MESSAGE,"扫描电脑互传中的配对二维码")
+            putExtra(Intents.Scan.BEEP_ENABLED,false)
+            putExtra(Intents.Scan.BARCODE_IMAGE_ENABLED,false)
+            putExtra(Intents.Scan.ORIENTATION_LOCKED,false)
+        }
+        startActivityForResult(scan,43)
     }
     private fun chooseTarget() {
         val items=targets().filter { it.online }; require(items.isNotEmpty()) { "还没有在线设备，请先与附近设备配对" }
@@ -202,6 +242,10 @@ class MainActivity : Activity() {
         else if(updates.available!=null) action(update,"立即下载更新",true) { updates.check(force=true,manualDownload=true) }
         action(update,"检查更新") { updates.check(force=true); message("正在检查更新…") }
         val options=ui.card(body)
+        action(options,"开源软件许可") {
+            val text=assets.open("third-party-notices.txt").bufferedReader().use { it.readText() }
+            AlertDialog.Builder(this).setTitle("开源软件许可").setMessage(text).setPositiveButton("关闭",null).show()
+        }
         setting(options,"自动检查更新","每天在后台检查，也会在打开时检查",updates.autoCheck()) { updates.settings(it,updates.autoDownload()); signature="" }
         setting(options,"非计费网络自动下载","按流量计费时等待，或由你手动下载",updates.autoDownload()) { updates.settings(updates.autoCheck(),it); signature="" }
         ui.heading(body,"连接与偏好")
@@ -245,6 +289,19 @@ class MainActivity : Activity() {
     @Deprecated("Platform document picker")
     override fun onActivityResult(requestCode: Int,resultCode: Int,data: Intent?) {
         super.onActivityResult(requestCode,resultCode,data)
+        if(requestCode==43) {
+            if(resultCode!=RESULT_OK) {
+                message(if(data?.getBooleanExtra(Intents.Scan.MISSING_CAMERA_PERMISSION,false)==true) "扫码需要相机权限，也可以使用附近设备或按 IP 配对" else "已取消扫码")
+                return
+            }
+            safe {
+                val invitation=PairingInvitationCodec.parse(data?.getStringExtra(Intents.Scan.RESULT) ?: error("没有识别到二维码"))
+                val hub=requireService().hub ?: error("连接服务正在启动，请稍候")
+                page=0; focusPairing=true; signature=""; val needsConfirmation=hub.pairInvitation(invitation); render()
+                message(if(needsConfirmation) "正在连接电脑，请在两端核对验证码" else "设备已配对，正在重新连接")
+            }
+            return
+        }
         if(requestCode==42 && resultCode==RESULT_OK && data!=null) safe { val uris=mutableListOf<Uri>(); data.clipData?.let { clip -> repeat(clip.itemCount) { uris.add(clip.getItemAt(it).uri) } }; data.data?.let(uris::add); confirmFiles(uris.distinct()) }
     }
     private fun confirmFiles(uris: List<Uri>) {
@@ -267,6 +324,6 @@ class MainActivity : Activity() {
     }
     override fun onRequestPermissionsResult(requestCode: Int,permissions: Array<out String>,grantResults: IntArray) {
         super.onRequestPermissionsResult(requestCode,permissions,grantResults)
-        if(requestCode==91 && PlatformCompat.canUseLan(this)) safe { startConnection(false) }
+        if(requestCode==91) { if(PlatformCompat.canUseLan(this)) safe { startConnection(false) } else { message("未获得本地网络权限，可在系统权限设置中允许"); signature=""; render() } }
     }
 }

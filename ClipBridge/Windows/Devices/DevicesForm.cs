@@ -16,7 +16,7 @@ internal sealed class DevicesForm : Form
         _hub=hub; Text="ClipBridge · 设备与配对"; Icon=AppIcon.Load(); Size=new Size(620,700); MinimumSize=new Size(500,500); StartPosition=FormStartPosition.CenterParent; Font=Ui.Font(10f); BackColor=Ui.Canvas; ForeColor=Ui.Ink;
         Controls.Add(_rows); Controls.Add(_status);
         _timer.Tick+=(_,_)=> { if(Visible) RefreshRows(); }; _timer.Start();
-        Shown+=(_,_)=>RefreshRows(); FormClosed+=(_,_)=>_timer.Dispose();
+        Shown+=(_,_)=> { _hub.RefreshDiscovery(); RefreshRows(); }; FormClosed+=(_,_)=>_timer.Dispose();
     }
     private void Heading(string title) => _rows.Controls.Add(new Label { Text=title,AutoSize=true,Font=Ui.Font(13f,FontStyle.Bold),Margin=new Padding(4,16,4,8) });
     private Button Action(string label,Action callback)
@@ -46,6 +46,10 @@ internal sealed class DevicesForm : Form
             else actions.Controls.Add(new Label { Text="已确认，等待另一台设备…",AutoSize=true });
             card.Controls.Add(actions);
         }
+        var search=Card("搜索附近设备","切换网络后可立即重新搜索；不会中断正在进行的传输。");
+        search.Controls.Add(Action("立即搜索",()=> { _hub.RefreshDiscovery(); _status.Text="正在重新搜索附近设备"; }));
+        var scan=Card("扫码配对","在手机互传点击“扫码配对”，扫描这台电脑的二维码。");
+        scan.Controls.Add(Action("显示二维码",()=> { using var qr=new PairingQrForm(_hub); qr.ShowDialog(this); }));
         Heading("我的设备");
         foreach(var t in trusted)
         {
