@@ -113,6 +113,12 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'Release layout tests failed.' }
           dotnet run --project tools/UpdateSmokeTests/UpdateSmokeTests.csproj --configuration Release -- --verify-helper
           if ($LASTEXITCODE -ne 0) { throw 'Updater helper smoke test failed.' }
+          dotnet run --project tools/UpdateSmokeTests/UpdateSmokeTests.csproj --configuration Release -- --verify-relaunch
+          if ($LASTEXITCODE -ne 0) { throw 'Updater concurrent relaunch regression failed.' }
+          dotnet run --project tools/UpdateSmokeTests/UpdateSmokeTests.csproj --configuration Release -- --verify-experience
+          if ($LASTEXITCODE -ne 0) { throw 'Updater experience regression failed.' }
+          dotnet run --project tools/UpdateSmokeTests/UpdateSmokeTests.csproj --configuration Release -- --verify-rollback
+          if ($LASTEXITCODE -ne 0) { throw 'Updater rollback regression failed.' }
       - name: Verify QR image interoperability
         shell: pwsh
         env:

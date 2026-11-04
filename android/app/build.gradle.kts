@@ -3,7 +3,7 @@ android {
     namespace = "app.clipbridge"
     compileSdk = 36
     buildToolsVersion = "36.0.0"
-    defaultConfig { applicationId = "app.clipbridge"; minSdk = 29; targetSdk = 36; versionCode = 50200; versionName = "0.5.2" }
+    defaultConfig { applicationId = "app.clipbridge"; minSdk = 29; targetSdk = 36; versionCode = 50300; versionName = "0.5.3" }
     val releaseKeystore = providers.environmentVariable("CLIPBRIDGE_ANDROID_KEYSTORE_PATH").orNull
     if (releaseKeystore != null) {
         signingConfigs {

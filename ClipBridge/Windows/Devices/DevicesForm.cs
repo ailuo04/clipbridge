@@ -1,73 +1,508 @@
 using System;
+using System.Collections.Generic;
 using System.Drawing;
 using System.Linq;
+using System.Net;
+using System.Text.Json;
 using System.Windows.Forms;
 
 namespace ClipBridge.Windows;
+
 internal sealed class DevicesForm : Form
 {
     private readonly DeviceHub _hub;
-    private readonly FlowLayoutPanel _rows=new() { Dock=DockStyle.Fill,FlowDirection=FlowDirection.TopDown,WrapContents=false,AutoScroll=true,Padding=new Padding(16) };
-    private readonly Label _status=new() { Dock=DockStyle.Bottom,Height=54,Padding=new Padding(16,8,16,8),Text="同一 Wi-Fi 或热点内自动搜索；配对请求不会自动打开本窗口。" };
-    private readonly System.Windows.Forms.Timer _timer=new() { Interval=1000 };
-    private string _signature="";
+    private readonly PairingQrPanel _pairingQr;
+    private DateTimeOffset _nextAddressRefresh;
+    private readonly AppHeaderSurface _header = new() { Dock = DockStyle.Top, Height = 96, Padding = new Padding(24, 18, 24, 18) };
+    private readonly Panel _rows = new()
+    {
+        Name = "DevicesScroll", Dock = DockStyle.Fill, AutoScroll = true
+    };
+    private readonly Panel _content = new()
+    {
+        Name = "DevicesContent", Dock = DockStyle.Top, Padding = new Padding(22, 18, 22, 16)
+    };
+    private readonly Panel _footer = new() { Dock = DockStyle.Bottom, Height = 40, Padding = new Padding(24, 9, 24, 9) };
+    private readonly Label _status = new()
+    {
+        Name = "DevicesStatus", Dock = DockStyle.Fill, AutoEllipsis = true,
+        Text = "同一 Wi-Fi 或热点内自动发现 · 配对时请核对两端验证码"
+    };
+    private readonly RoundedSurface _connectCard = new() { Name = "ConnectionCard", Height = 138, Padding = new Padding(18, 14, 18, 20), Margin = new Padding(0, 0, 0, 4) };
+    private readonly TableLayoutPanel _connectContent = new() { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 3, Margin = Padding.Empty, Padding = Padding.Empty };
+    private readonly TableLayoutPanel _manualArea = new() { ColumnCount = 2, RowCount = 2, Dock = DockStyle.Fill, Visible = false, Margin = Padding.Empty };
+    private readonly TextBoxShell _manualInput = new(Ui.Font(9.2f)) { Dock = DockStyle.Fill, Prefix = "IPv4" };
+    private readonly FlowLayoutPanel _requests = Section("PairingRequests");
+    private readonly FlowLayoutPanel _trusted = Section("TrustedDevices");
+    private readonly FlowLayoutPanel _nearby = Section("NearbyDevices");
+    private readonly Timer _timer = new() { Interval = 1000 };
+    private readonly List<Font> _fonts = new();
+    private readonly ToolTip _tips = new();
+    private string _signature = "";
+    private bool _manualExpanded;
+    private bool _layingOut;
+    private UiColorTheme _renderedTheme = Ui.CurrentTheme;
+
     public DevicesForm(DeviceHub hub)
     {
-        _hub=hub; Text="ClipBridge · 设备与配对"; Icon=AppIcon.Load(); Size=new Size(620,700); MinimumSize=new Size(500,500); StartPosition=FormStartPosition.CenterParent; Font=Ui.Font(10f); BackColor=Ui.Canvas; ForeColor=Ui.Ink;
-        Controls.Add(_rows); Controls.Add(_status);
-        _timer.Tick+=(_,_)=> { if(Visible) RefreshRows(); }; _timer.Start();
-        Shown+=(_,_)=> { _hub.RefreshDiscovery(); RefreshRows(); }; FormClosed+=(_,_)=>_timer.Dispose();
+        SuspendLayout();
+        _hub = hub;
+        _pairingQr = new PairingQrPanel(hub.DeviceId) { Dock = DockStyle.Fill };
+        AutoScaleDimensions = new SizeF(96, 96);
+        AutoScaleMode = AutoScaleMode.Dpi;
+        Text = "ClipBridge · 设备与配对";
+        Icon = AppIcon.Load();
+        ClientSize = new Size(640, 640);
+        MinimumSize = new Size(500, 500);
+        StartPosition = FormStartPosition.CenterParent;
+        Font = OwnedFont(9.5f);
+        DoubleBuffered = true;
+        _status.Font = OwnedFont(8.5f);
+        _fonts.Add(_manualInput.Editor.Font);
+        _tips.SetToolTip(_status, _status.Text);
+        _footer.Controls.Add(_status);
+        _footer.Paint += (_, e) =>
+        {
+            using var pen = new Pen(Ui.Line);
+            e.Graphics.DrawLine(pen, 0, 0, _footer.Width, 0);
+        };
+        BuildHeader();
+        BuildConnectionCard();
+        _content.Controls.AddRange(new Control[] { _requests, _connectCard, _trusted, _nearby });
+        _rows.Controls.Add(_content);
+        var workspace = new Panel { Name = "DevicesWorkspace", Dock = DockStyle.Fill };
+        workspace.Controls.Add(_rows);
+        workspace.Controls.Add(_footer);
+        workspace.Controls.Add(_header);
+        Controls.Add(workspace);
+        _rows.ClientSizeChanged += (_, _) => LayoutRows();
+        _timer.Tick += (_, _) =>
+        {
+            if (!Visible) return;
+            if (_renderedTheme != Ui.CurrentTheme) ApplyTheme();
+            if (DateTimeOffset.UtcNow >= _nextAddressRefresh) RefreshQrAddresses();
+            RefreshRows();
+        };
+        _hub.Status += OnHubStatus;
+        Shown += (_, _) => { _hub.RefreshDiscovery(); RefreshQrAddresses(); RefreshRows(); _timer.Start(); };
+        ApplyTheme();
+        AutoScaleDimensions = new SizeF(96, 96);
+        ResumeLayout(true);
     }
-    private void Heading(string title) => _rows.Controls.Add(new Label { Text=title,AutoSize=true,Font=Ui.Font(13f,FontStyle.Bold),Margin=new Padding(4,16,4,8) });
-    private Button Action(string label,Action callback)
+
+    private Font OwnedFont(float size, FontStyle style = FontStyle.Regular)
     {
-        var button=new Button { Text=label,AutoSize=true,MinimumSize=new Size(96,36),FlatStyle=FlatStyle.Flat,Margin=new Padding(4),BackColor=Ui.Surface,ForeColor=Ui.Ink };
-        button.Click+=(_,_)=> { try { callback(); } catch(Exception e) { _status.Text=e.Message; } }; return button;
+        var font = Ui.Font(size, style);
+        _fonts.Add(font);
+        return font;
     }
-    private FlowLayoutPanel Card(string title,string detail)
+
+    private int Pixels(int value) => (int)Math.Round(value * DeviceDpi / 96.0);
+
+    private static FlowLayoutPanel Section(string name) => new()
     {
-        var box=new FlowLayoutPanel { FlowDirection=FlowDirection.TopDown,WrapContents=false,AutoSize=true,Width=Math.Max(420,_rows.ClientSize.Width-44),Padding=new Padding(14),Margin=new Padding(2,4,2,8),BackColor=Ui.Surface };
-        box.Controls.Add(new Label { Text=title,AutoSize=true,Font=Ui.Font(11f,FontStyle.Bold),MaximumSize=new Size(470,0) });
-        box.Controls.Add(new Label { Text=detail,AutoSize=true,MaximumSize=new Size(470,0),Margin=new Padding(3,8,3,8) }); _rows.Controls.Add(box); return box;
+        Name = name, FlowDirection = FlowDirection.TopDown, WrapContents = false,
+        AutoSize = false, Margin = Padding.Empty, Padding = Padding.Empty
+    };
+
+    private Label TextLabel(string text, Font font, bool muted = false) => new()
+    {
+        Text = text, Font = font, Dock = DockStyle.Fill, AutoEllipsis = true,
+        TextAlign = ContentAlignment.MiddleLeft, Margin = Padding.Empty,
+        BackColor = Color.Transparent, ForeColor = muted ? Ui.Muted : Ui.Ink,
+        Tag = muted ? "muted" : null
+    };
+
+    private ModernButton ActionButton(string text, string name, Action callback, ButtonTone tone = ButtonTone.Secondary, string glyph = "")
+    {
+        var button = new ModernButton(text, tone, glyph)
+        {
+            Name = name, AutoSize = false, Size = new Size(116, 38), Margin = Padding.Empty,
+            Anchor = AnchorStyles.Right, AccessibleName = text
+        };
+        button.Click += (_, _) =>
+        {
+            try { callback(); }
+            catch (Exception error) { SetStatus(error.Message); }
+        };
+        return button;
     }
+
+    private void BuildHeader()
+    {
+        var layout = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 3, RowCount = 1, Margin = Padding.Empty };
+        layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        layout.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 52));
+        layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        layout.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 124));
+        var tile = new IconTile { Glyph = "", Anchor = AnchorStyles.Left, Margin = Padding.Empty };
+        var title = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 2, Margin = Padding.Empty };
+        title.RowStyles.Add(new RowStyle(SizeType.Percent, 58));
+        title.RowStyles.Add(new RowStyle(SizeType.Percent, 42));
+        title.Controls.Add(TextLabel("设备与配对", OwnedFont(18f, FontStyle.Bold)), 0, 0);
+        title.Controls.Add(TextLabel("连接设备，轻松互传", OwnedFont(9f), true), 0, 1);
+        var search = ActionButton("重新搜索", "RefreshDiscoveryButton", () =>
+        {
+            _hub.RefreshDiscovery();
+            RefreshQrAddresses();
+            SetStatus("正在搜索附近设备，请保持两台设备连接同一 Wi-Fi 或热点");
+        }, glyph: "");
+        _tips.SetToolTip(search, "切换网络后可立即重新搜索，正在进行的传输会继续。");
+        layout.Controls.Add(tile, 0, 0);
+        layout.Controls.Add(title, 1, 0);
+        layout.Controls.Add(search, 2, 0);
+        _header.Controls.Add(layout);
+    }
+
+    private void BuildConnectionCard()
+    {
+        _connectContent.RowStyles.Add(new RowStyle(SizeType.Absolute, 216));
+        _connectContent.RowStyles.Add(new RowStyle(SizeType.Absolute, 30));
+        _connectContent.RowStyles.Add(new RowStyle(SizeType.Absolute, 0));
+        _connectContent.Controls.Add(_pairingQr, 0, 0);
+        var toggle = ActionButton("通过 IP 连接（备用）", "ManualPairingToggle", () =>
+        {
+            _manualExpanded = !_manualExpanded;
+            _manualArea.Visible = _manualExpanded;
+            LayoutRows();
+            ((Button)_connectContent.GetControlFromPosition(0, 1)!).Text = _manualExpanded ? "收起 IP 备用连接" : "通过 IP 连接（备用）";
+            if (_manualExpanded) _manualInput.Editor.Focus();
+        }, ButtonTone.Ghost, "");
+        toggle.Width = 206;
+        toggle.Height = 28;
+        toggle.MinimumSize = new Size(72, 28);
+        toggle.Anchor = AnchorStyles.Left;
+        toggle.Margin = Padding.Empty;
+        _connectContent.Controls.Add(toggle, 0, 1);
+        _manualArea.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        _manualArea.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 124));
+        _manualArea.RowStyles.Add(new RowStyle(SizeType.Absolute, 42));
+        _manualArea.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        _manualInput.Margin = new Padding(0, 4, 10, 0);
+        _manualInput.Editor.Name = "ManualPairingAddress";
+        _manualInput.Editor.PlaceholderText = "例如 192.168.1.8";
+        _manualInput.Editor.AccessibleName = "设备局域网 IPv4 地址";
+        _manualInput.Editor.KeyDown += (_, e) =>
+        {
+            if (e.KeyCode != Keys.Enter) return;
+            e.SuppressKeyPress = true;
+            StartManualPairing();
+        };
+        var connect = ActionButton("连接此地址", "ManualPairingButton", StartManualPairing, ButtonTone.Primary);
+        _manualArea.Controls.Add(_manualInput, 0, 0);
+        _manualArea.Controls.Add(connect, 1, 0);
+        var hint = TextLabel("无法扫码或搜索不到设备时使用", OwnedFont(8.2f), true);
+        _manualArea.Controls.Add(hint, 0, 1);
+        _manualArea.SetColumnSpan(hint, 2);
+        _connectContent.Controls.Add(_manualArea, 0, 2);
+        _connectCard.Controls.Add(_connectContent);
+    }
+
+    private void RefreshQrAddresses()
+    {
+        _pairingQr.RefreshAddresses();
+        _nextAddressRefresh = DateTimeOffset.UtcNow.AddSeconds(5);
+    }
+
+    private void StartManualPairing()
+    {
+        string value = _manualInput.Editor.Text.Trim();
+        if (!IPAddress.TryParse(value, out var address) || !SharedProtocol.IsLocalAddress(address))
+        {
+            SetStatus("请输入局域网 IPv4 地址，例如 192.168.1.8");
+            _manualInput.Editor.Focus();
+            return;
+        }
+        BeginPairing(new NearbyDevice("", value, "android", address.ToString(), 0, false));
+    }
+
+    private void BeginPairing(NearbyDevice peer)
+    {
+        SetStatus("正在建立配对，请在两端核对验证码");
+        _ = _hub.PairAsync(peer);
+    }
+
+    private void AddHeading(FlowLayoutPanel section, string title, int count)
+    {
+        var heading = new FlowLayoutPanel
+        {
+            Height = Pixels(44), FlowDirection = FlowDirection.LeftToRight, WrapContents = false,
+            Margin = Padding.Empty, Padding = new Padding(2, Pixels(12), 0, 0)
+        };
+        heading.Controls.Add(new Label
+        {
+            Text = title, AutoSize = true, Font = _sectionFont, ForeColor = Ui.Ink,
+            Margin = new Padding(0, 0, Pixels(10), 0)
+        });
+        heading.Controls.Add(new CountPill { Count = count, Margin = Padding.Empty });
+        section.Controls.Add(heading);
+    }
+
+    private Font? _sectionFont;
+    private Font? _deviceFont;
+    private Font? _detailFont;
+    private Font? _codeFont;
+
+    private RoundedSurface Card(int height) => new()
+    {
+        Height = Pixels(height), Padding = new Padding(Pixels(16), Pixels(12), Pixels(16), Pixels(18)),
+        Margin = new Padding(0, 0, 0, Pixels(8)), CornerRadius = Pixels(14)
+    };
+
+    private static string PlatformName(string platform) => platform switch
+    {
+        "android" => "Android", "windows" => "Windows", _ => platform
+    };
+
+    private void AddDevice(FlowLayoutPanel section, string id, string name, string platform, string address, string state, string action, Action callback, ButtonTone tone)
+    {
+        var card = Card(88);
+        var layout = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 3, RowCount = 1, Margin = Padding.Empty };
+        layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        layout.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, Pixels(52)));
+        layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        layout.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, Pixels(112)));
+        layout.Controls.Add(new IconTile
+        {
+            Glyph = platform == "android" ? "" : "", Size = new Size(Pixels(40), Pixels(40)),
+            Anchor = AnchorStyles.Left, Margin = Padding.Empty
+        }, 0, 0);
+        var labels = new TableLayoutPanel { Dock = DockStyle.Fill, RowCount = 2, ColumnCount = 1, Margin = new Padding(0, 0, Pixels(10), 0) };
+        labels.RowStyles.Add(new RowStyle(SizeType.Percent, 53));
+        labels.RowStyles.Add(new RowStyle(SizeType.Percent, 47));
+        var title = TextLabel(name, _deviceFont!);
+        _tips.SetToolTip(title, name);
+        labels.Controls.Add(title, 0, 0);
+        var detail = TextLabel(state + "  ·  " + PlatformName(platform) + (string.IsNullOrEmpty(address) ? "" : "  ·  " + address), _detailFont!, true);
+        if (state == "已连接") { detail.Tag = "success"; detail.ForeColor = Ui.SuccessText; }
+        _tips.SetToolTip(detail, detail.Text);
+        labels.Controls.Add(detail, 0, 1);
+        layout.Controls.Add(labels, 1, 0);
+        var button = ActionButton(action, (tone == ButtonTone.Primary ? "PairDevice-" : "RevokeDevice-") + id, callback, tone);
+        button.Size = new Size(Pixels(104), Pixels(34));
+        button.AccessibleName = action + " " + name;
+        layout.Controls.Add(button, 2, 0);
+        card.Controls.Add(layout);
+        section.Controls.Add(card);
+    }
+
+    private void AddEmpty(FlowLayoutPanel section, string title, string detail, string glyph)
+    {
+        var card = Card(96);
+        var layout = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, RowCount = 1, Margin = Padding.Empty };
+        layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        layout.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, Pixels(52)));
+        layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        layout.Controls.Add(new IconTile { Glyph = glyph, Size = new Size(Pixels(40), Pixels(40)), Anchor = AnchorStyles.Left, Margin = Padding.Empty }, 0, 0);
+        var labels = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 2, Margin = Padding.Empty };
+        labels.RowStyles.Add(new RowStyle(SizeType.Absolute, Pixels(26)));
+        labels.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        labels.Controls.Add(TextLabel(title, _deviceFont!), 0, 0);
+        labels.Controls.Add(TextLabel(detail, _detailFont!, true), 0, 1);
+        layout.Controls.Add(labels, 1, 0);
+        card.Controls.Add(layout);
+        section.Controls.Add(card);
+    }
+
+    private void AddRequest(PairingRequest request, DateTimeOffset now)
+    {
+        var card = Card(204);
+        var content = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 4, Margin = Padding.Empty };
+        content.RowStyles.Add(new RowStyle(SizeType.Absolute, Pixels(28)));
+        content.RowStyles.Add(new RowStyle(SizeType.Absolute, Pixels(24)));
+        content.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        content.RowStyles.Add(new RowStyle(SizeType.Absolute, Pixels(40)));
+        content.Controls.Add(TextLabel(request.Name + " 请求配对", _deviceFont!), 0, 0);
+        bool expired = request.Expires <= now;
+        content.Controls.Add(TextLabel("请核对两端数字一致 · " + request.Address + " · " + (expired ? "已过期，请重新发起" : "有效至 " + request.Expires.ToLocalTime().ToString("HH:mm:ss")), _detailFont!, true), 0, 1);
+        var code = TextLabel(request.Code.Length == 6 ? request.Code.Insert(3, " ") : request.Code, _codeFont!);
+        code.TextAlign = ContentAlignment.MiddleCenter;
+        code.ForeColor = Ui.Accent;
+        code.Tag = "accent";
+        content.Controls.Add(code, 0, 2);
+        var actions = new FlowLayoutPanel { Dock = DockStyle.Fill, FlowDirection = FlowDirection.LeftToRight, WrapContents = false, Margin = Padding.Empty, Padding = new Padding(0, Pixels(2), 0, 0) };
+        if (!request.Decision.Task.IsCompleted)
+        {
+            var approve = ActionButton("确认一致", "ConfirmPairing-" + request.Session, () => { _hub.Decide(request, true); RefreshRows(); }, ButtonTone.Primary);
+            var reject = ActionButton("拒绝配对", "RejectPairing-" + request.Session, () => { _hub.Decide(request, false); RefreshRows(); }, ButtonTone.Danger);
+            approve.Enabled = reject.Enabled = !expired;
+            approve.Margin = new Padding(0, 0, Pixels(8), 0);
+            actions.Controls.Add(approve);
+            actions.Controls.Add(reject);
+        }
+        else
+        {
+            bool accepted = request.Decision.Task.IsCompletedSuccessfully && request.Decision.Task.Result;
+            var message = TextLabel(accepted ? "已确认，等待另一台设备…" : "已拒绝此配对请求", _detailFont!, true);
+            message.AutoSize = true;
+            message.Dock = DockStyle.None;
+            message.Margin = new Padding(0, Pixels(8), 0, 0);
+            actions.Controls.Add(message);
+        }
+        content.Controls.Add(actions, 0, 3);
+        card.Controls.Add(content);
+        _requests.Controls.Add(card);
+    }
+
     private void RefreshRows()
     {
-        var nearby=_hub.Devices(); var requests=_hub.Pending.Values.OrderBy(p=>p.Session).ToArray(); var trusted=_hub.Trusted();
-        string signature=string.Join("|",nearby.Select(p=>$"{p.Id}:{p.Address}:{p.Authenticated}"))+string.Join("|",requests.Select(p=>$"{p.Session}:{p.Id}:{p.Name}:{p.Address}:{p.Code}:{p.Expires.Ticks}:{p.Decision.Task.IsCompleted}"))+string.Join("|",trusted.Select(t=>$"{t.Id}:{t.Active}"));
-        if(signature==_signature && _rows.Controls.Count>0) return; _signature=signature;
-        _rows.SuspendLayout(); foreach(Control row in _rows.Controls.Cast<Control>().ToArray()) row.Dispose();
-        if(requests.Length>0) Heading("核对两端验证码");
-        foreach(var p in requests)
+        var nearby = _hub.Devices();
+        var requests = _hub.Pending.Values.OrderBy(request => request.Session).ToArray();
+        var trusted = _hub.Trusted();
+        var now = DateTimeOffset.UtcNow;
+        string signature = JsonSerializer.Serialize(new
         {
-            var card=Card(p.Name+" · "+p.Address,"请核对手机与电脑上的数字完全一致。\n有效期至 "+p.Expires.ToLocalTime().ToString("HH:mm:ss"));
-            card.Controls.Add(new Label { Text=p.Code,AutoSize=true,Font=Ui.Font(28f,FontStyle.Bold),ForeColor=Color.RoyalBlue });
-            var actions=new FlowLayoutPanel { AutoSize=true,WrapContents=false };
-            if(!p.Decision.Task.IsCompleted) { actions.Controls.Add(Action("确认一致",()=>_hub.Decide(p,true))); actions.Controls.Add(Action("拒绝 / 不一致",()=>_hub.Decide(p,false))); }
-            else actions.Controls.Add(new Label { Text="已确认，等待另一台设备…",AutoSize=true });
-            card.Controls.Add(actions);
-        }
-        var search=Card("搜索附近设备","切换网络后可立即重新搜索；不会中断正在进行的传输。");
-        search.Controls.Add(Action("立即搜索",()=> { _hub.RefreshDiscovery(); _status.Text="正在重新搜索附近设备"; }));
-        var scan=Card("扫码配对","在手机互传点击“扫码配对”，扫描这台电脑的二维码。");
-        scan.Controls.Add(Action("显示二维码",()=> { using var qr=new PairingQrForm(_hub); qr.ShowDialog(this); }));
-        Heading("我的设备");
-        foreach(var t in trusted)
+            Nearby = nearby.Select(peer => new { peer.Id, peer.Name, peer.Platform, peer.Address, peer.Authenticated }),
+            Trusted = trusted.Select(device => new { device.Id, device.Name, device.Platform, device.Address, device.Active }),
+            Requests = requests.Select(request => new
+            {
+                request.Session, request.Id, request.Name, request.Address, request.Code, request.Expires,
+                Expired = request.Expires <= now, Decided = request.Decision.Task.IsCompleted
+            })
+        });
+        if (signature == _signature) return;
+        _sectionFont ??= OwnedFont(11f, FontStyle.Bold);
+        _deviceFont ??= OwnedFont(10.5f, FontStyle.Bold);
+        _detailFont ??= OwnedFont(8.5f);
+        _codeFont ??= OwnedFont(26f, FontStyle.Bold);
+        int scroll = -_rows.AutoScrollPosition.Y;
+        _rows.SuspendLayout();
+        try
         {
-            var online=nearby.FirstOrDefault(p=>p.Id==t.Id && p.Authenticated);
-            var card=Card(t.Name,(online!=null?"已连接 · "+online.Address:t.Active?"离线":"配对确认恢复中")+" · "+t.Platform);
-            card.Controls.Add(Action("取消配对",()=> { _hub.Revoke(t.Id); _status.Text="已取消该设备配对"; }));
+            foreach (var section in new[] { _requests, _trusted, _nearby })
+            {
+                section.SuspendLayout();
+                foreach (Control row in section.Controls.Cast<Control>().ToArray()) row.Dispose();
+            }
+            _requests.Visible = requests.Length > 0;
+            if (requests.Length > 0) AddHeading(_requests, "等待配对确认", requests.Length);
+            foreach (var request in requests) AddRequest(request, now);
+            AddHeading(_trusted, "我的设备", trusted.Length);
+            foreach (var device in trusted)
+            {
+                var online = nearby.FirstOrDefault(peer => peer.Id == device.Id && peer.Authenticated);
+                string state = online != null ? "已连接" : device.Active ? "离线" : "配对恢复中";
+                AddDevice(_trusted, device.Id, device.Name, device.Platform, online?.Address ?? "", state, "取消配对", () =>
+                {
+                    _hub.Revoke(device.Id);
+                    SetStatus("已取消与 " + device.Name + " 的配对");
+                    RefreshRows();
+                }, ButtonTone.Ghost);
+            }
+            if (trusted.Length == 0) AddEmpty(_trusted, "还没有配对设备", "用手机扫码，或在附近设备中选择一台开始配对。", "");
+            var unpaired = nearby.Where(peer => trusted.All(device => device.Id != peer.Id)).ToArray();
+            AddHeading(_nearby, "附近设备", unpaired.Length);
+            foreach (var peer in unpaired)
+                AddDevice(_nearby, peer.Id, peer.Name, peer.Platform, peer.Address, "未配对", "开始配对", () => BeginPairing(peer), ButtonTone.Primary);
+            if (unpaired.Length == 0) AddEmpty(_nearby, "正在搜索附近设备…", "连接同一 Wi-Fi 或热点，并在另一台设备上打开互传。", "");
+            _signature = signature;
         }
-        if(trusted.Length==0) Card("还没有配对设备","在下面选择设备发起配对，或在手机上选择这台电脑。");
-        Heading("附近设备");
-        foreach(var p in nearby.Where(p=>trusted.All(t=>t.Id!=p.Id)))
+        finally
         {
-            var card=Card(p.Name,p.Platform+" · "+p.Address+" · 未配对");
-            card.Controls.Add(Action("开始配对",()=> { _status.Text="正在建立配对，请在两端核对验证码"; _=_hub.PairAsync(p); }));
+            foreach (var section in new[] { _requests, _trusted, _nearby }) section.ResumeLayout(true);
+            _rows.ResumeLayout(true);
+            LayoutRows();
+            _rows.AutoScrollPosition = new Point(0, scroll);
         }
-        if(!nearby.Any(p=>trusted.All(t=>t.Id!=p.Id))) Card("正在搜索附近设备…","请让两台设备连接同一 Wi-Fi 或手机热点，并打开互传。网络隔离或防火墙可能阻止发现。");
-        var manual=Card("按 IP 发起配对","自动搜索不可用时，填写另一台设备的局域网 IPv4，仍需要在两端确认验证码。");
-        var input=new TextBox { Width=330,PlaceholderText="例如 192.168.1.8",AccessibleName="设备局域网 IPv4 地址" }; manual.Controls.Add(input);
-        manual.Controls.Add(Action("连接此地址",()=> { if(!System.Net.IPAddress.TryParse(input.Text.Trim(),out var address) || !SharedProtocol.IsLocalAddress(address)) throw new ArgumentException("请输入局域网 IPv4 地址"); _=_hub.PairAsync(new("",input.Text.Trim(),"android",address.ToString(),0,false)); _status.Text="正在发起配对，请核对两端验证码"; }));
-        _rows.ResumeLayout();
+    }
+
+    private void LayoutRows()
+    {
+        if (_layingOut || IsDisposed) return;
+        _layingOut = true;
+        try
+        {
+            // The second pass accounts for a vertical scrollbar appearing or disappearing.
+            for (int pass = 0; pass < 2; pass++)
+            {
+                _rows.SuspendLayout();
+                int width = Math.Max(Pixels(100), _rows.ClientSize.Width - _content.Padding.Horizontal);
+                try
+                {
+                    _connectCard.Width = width;
+                    int qrHeight = _pairingQr.GetPreferredSize(new Size(Math.Max(1, width - _connectCard.Padding.Horizontal), 0)).Height;
+                    _connectContent.RowStyles[0].Height = qrHeight;
+                    _connectContent.RowStyles[2].Height = _manualExpanded ? Pixels(64) : 0;
+                    _connectCard.Height = qrHeight + Pixels(30 + (_manualExpanded ? 64 : 0)) + _connectCard.Padding.Vertical;
+                    foreach (var section in new[] { _requests, _trusted, _nearby })
+                    {
+                        section.Width = width;
+                        foreach (Control row in section.Controls) row.Width = Math.Max(1, width - row.Margin.Horizontal);
+                        section.Height = section.Controls.Cast<Control>().Sum(row => row.Height + row.Margin.Vertical);
+                    }
+                    int y = _content.Padding.Top;
+                    foreach (Control row in _content.Controls)
+                    {
+                        if (row == _requests && row.Controls.Count == 0) continue;
+                        row.Location = new Point(_content.Padding.Left, y);
+                        y += row.Height + row.Margin.Bottom;
+                    }
+                    _content.Height = y + _content.Padding.Bottom;
+                }
+                finally { _rows.ResumeLayout(true); }
+                if (width == Math.Max(Pixels(100), _rows.ClientSize.Width - _content.Padding.Horizontal)) break;
+            }
+        }
+        finally { _layingOut = false; }
+    }
+
+    private void SetStatus(string message)
+    {
+        _status.Text = message;
+        _tips.SetToolTip(_status, message);
+    }
+
+    private void OnHubStatus(string message)
+    {
+        if (IsDisposed || Disposing || !IsHandleCreated) return;
+        try
+        {
+            if (InvokeRequired) BeginInvoke((Action)(() => { if (!IsDisposed && !Disposing) SetStatus(message); }));
+            else SetStatus(message);
+        }
+        catch (InvalidOperationException) { }
+    }
+
+    public void ApplyTheme()
+    {
+        _renderedTheme = Ui.CurrentTheme;
+        BackColor = Ui.Canvas;
+        ForeColor = Ui.Ink;
+        void Recolor(Control control, Color background)
+        {
+            if (control is PairingQrPanel qrPanel) { qrPanel.ApplyTheme(); return; }
+            Color childBackground = background;
+            if (control is RoundedSurface surface)
+            {
+                surface.FillColor = Ui.Surface;
+                surface.BorderColor = Ui.Line;
+                childBackground = Ui.Surface;
+            }
+            else if (control is TextBoxShell || control is TextBox) control.BackColor = childBackground = Ui.FieldSurface;
+            else if (control is not ModernButton && control is not IconTile && control is not CountPill)
+                control.BackColor = background;
+            control.ForeColor = (control.Tag as string) switch
+            {
+                "muted" => Ui.Muted, "accent" => Ui.Accent, "success" => Ui.SuccessText, _ => Ui.Ink
+            };
+            foreach (Control child in control.Controls) Recolor(child, childBackground);
+            control.Invalidate();
+        }
+        foreach (Control control in Controls) Recolor(control, Ui.Canvas);
+        Recolor(_header, Ui.Header);
+        Recolor(_footer, Ui.Surface);
+        LayoutRows();
+    }
+
+    protected override void Dispose(bool disposing)
+    {
+        if (disposing)
+        {
+            _timer.Dispose();
+            _hub.Status -= OnHubStatus;
+            _tips.Dispose();
+        }
+        base.Dispose(disposing);
+        if (disposing) foreach (var font in _fonts) font.Dispose();
     }
 }

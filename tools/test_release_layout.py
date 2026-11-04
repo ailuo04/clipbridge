@@ -20,6 +20,16 @@ class ReleaseLayoutTests(unittest.TestCase):
         for name in ("QRCoder.dll", "QRCoder-LICENSE.txt"):
             self.assertIn(f'Source: "{{#BuildDir}}\\{name}"', text)
 
+    def test_relaunch_regression_runs_without_signing_secrets(self):
+        text = (ROOT.parent / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8-sig")
+        section = text.split("- name: Verify package layout and updater helper", 1)[1].split("- name:", 1)[0]
+        self.assertIn("--verify-relaunch", section)
+        for secret in ("GITHUB_TOKEN", "CLIPBRIDGE_UPDATE_PRIVATE_KEY", "CLIPBRIDGE_ANDROID_KEYSTORE_BASE64", "CLIPBRIDGE_ANDROID_KEYSTORE_PASSWORD"):
+            self.assertIn(f"{secret}: ''", section)
+        lines = [line.strip() for line in section.splitlines() if line.strip()]
+        index = next(i for i, line in enumerate(lines) if "--verify-relaunch" in line)
+        self.assertIn("if ($LASTEXITCODE -ne 0)", lines[index + 1])
+
     def test_workflows_stop_on_each_failed_build_and_test_command(self):
         workflows = ROOT.parent / ".github" / "workflows"
         for filename, first_step in (("preflight.yml", "Build application and smoke-test projects"),
