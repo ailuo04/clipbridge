@@ -3,7 +3,7 @@
     <AssemblyName>ClipBridge</AssemblyName>
     <GenerateAssemblyInfo>True</GenerateAssemblyInfo>
     <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
-    <Version>0.5.3</Version>
+    <Version>0.5.4</Version>
     <IncludeSourceRevisionInInformationalVersion>False</IncludeSourceRevisionInInformationalVersion>
     <OutputType>WinExe</OutputType>
     <UseWindowsForms>True</UseWindowsForms>

@@ -88,6 +88,9 @@ jobs:
           $line = $output | Where-Object { $_ -like 'InnoCompilerPath=*' } | Select-Object -Last 1
           if (-not $line) { throw '没有找到 InnoCompilerPath 输出。' }
           "INNO_COMPILER_PATH=$($line -replace '^InnoCompilerPath=', '')" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+      - name: Verify shared brand icon
+        shell: pwsh
+        run: '& tools/Test-BrandIcon.ps1'
       - name: Build test projects
         shell: pwsh
         run: |
