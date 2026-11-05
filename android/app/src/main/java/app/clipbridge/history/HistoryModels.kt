@@ -30,8 +30,8 @@ data class HistorySyncPage(
     val requestId: String,
     val peerId: String,
     val pageNumber: Int,
-    val entries: List<HistorySyncEvent>,
-    val tombstones: List<HistoryTombstone>
+    val entries: List<HistorySyncEvent>?,
+    val tombstones: List<HistoryTombstone>?
 )
 
 /** Store-only references never enter HistorySyncEvent JSON. */

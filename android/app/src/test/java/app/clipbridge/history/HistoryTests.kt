@@ -62,6 +62,15 @@ class HistoryTests {
         val page = HistorySyncPage(1, "request-1", peerId, -1, listOf(event()), emptyList())
         invalid { HistoryPolicy.validatePageEnvelope(page, peerId) }
     }
+    @Test fun pageEnvelopeRejectsNullEntries() {
+        val page = HistorySyncPage(1, "request-1", peerId, 0, null, emptyList())
+        invalid { HistoryPolicy.validatePageEnvelope(page, peerId) }
+    }
+
+    @Test fun pageEnvelopeRejectsNullTombstones() {
+        val page = HistorySyncPage(1, "request-1", peerId, 0, emptyList(), null)
+        invalid { HistoryPolicy.validatePageEnvelope(page, peerId) }
+    }
     private fun event(
         schemaVersion: Int = 1,
         eventId: String = "event-1",
