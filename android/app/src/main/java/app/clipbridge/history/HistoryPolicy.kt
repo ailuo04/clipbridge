@@ -40,6 +40,7 @@ object HistoryPolicy {
         requireId(value.peerId, "peerId")
         requireId(authenticatedPeerId, "authenticated peerId")
         require(value.peerId == authenticatedPeerId) { "History page peer does not match the authenticated route" }
+        require(value.pageNumber >= 0) { "History page number cannot be negative" }
     }
     private fun requireId(value: String, name: String) {
         require(value.isNotBlank()) { "History $name is required" }

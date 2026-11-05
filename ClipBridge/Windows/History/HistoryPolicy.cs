@@ -53,6 +53,8 @@ internal static class HistoryPolicy
         RequireId(value.PeerId, "peerId");
         RequireId(authenticatedPeerId, "authenticated peerId");
         if (value.PeerId != authenticatedPeerId) throw new InvalidDataException("History page peer does not match the authenticated route.");
+        if (value.PageNumber < 0) throw new InvalidDataException("History page number cannot be negative.");
+        if (value.Entries is null || value.Tombstones is null) throw new InvalidDataException("History page collections are required.");
     }
     private static void RequireId(string? value, string name)
     {

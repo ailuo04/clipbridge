@@ -55,29 +55,37 @@ internal static class HistoryTests
         RejectsInvalid(() => HistoryPolicy.ValidatePageEnvelope(page with { RequestId = "" }, PeerId), "empty page requestId rejected");
         RejectsInvalid(() => HistoryPolicy.ValidatePageEnvelope(page with { SchemaVersion = 2 }, PeerId), "unsupported page schema rejected");
         RejectsInvalid(() => HistoryPolicy.ValidatePageEnvelope(page with { PeerId = "peer-b" }, PeerId), "page for another authenticated peer rejected");
+        RejectsInvalid(() => HistoryPolicy.ValidatePageEnvelope(page with { PageNumber = -1 }, PeerId), "negative page number rejected");
+        var missingEntries = JsonSerializer.Deserialize<HistorySyncPage>("""{"schemaVersion":1,"requestId":"request-1","peerId":"peer-a","pageNumber":0,"tombstones":[]}""")!;
+        RejectsInvalid(() => HistoryPolicy.ValidatePageEnvelope(missingEntries, PeerId), "missing page entries rejected");
+        var missingTombstones = JsonSerializer.Deserialize<HistorySyncPage>("""{"schemaVersion":1,"requestId":"request-1","peerId":"peer-a","pageNumber":0,"entries":[]}""")!;
+        RejectsInvalid(() => HistoryPolicy.ValidatePageEnvelope(missingTombstones, PeerId), "missing page tombstones rejected");
     }
     private static void SyncContractUsesStableJsonNamesAndExcludesLocalPaths()
     {
         JsonElement entry = JsonSerializer.SerializeToElement(Event());
-        foreach (string name in new[] { "schemaVersion", "eventId", "peerId", "senderDeviceId", "createdUtc", "contentType", "text", "files", "state" })
-            Program.Check(entry.TryGetProperty(name, out _), "event JSON contains " + name);
+        Program.Check(HasExactJsonProperties(entry, "schemaVersion", "eventId", "peerId", "senderDeviceId", "createdUtc", "contentType", "text", "files", "state"), "event JSON has exactly the contract keys");
+
         Program.Check(!entry.TryGetProperty("localFilePath", out _) && !entry.TryGetProperty("localFileUri", out _), "event JSON excludes local file paths and URIs");
 
         JsonElement file = JsonSerializer.SerializeToElement(new HistoryFileMetadata("demo.txt", 3, new string('a', 64)));
-        foreach (string name in new[] { "name", "size", "sha256" })
-            Program.Check(file.TryGetProperty(name, out _), "file JSON contains " + name);
+        Program.Check(HasExactJsonProperties(file, "name", "size", "sha256"), "file JSON has exactly the contract keys");
+
 
         JsonElement tombstone = JsonSerializer.SerializeToElement(new HistoryTombstone("event-1", PeerId, FixedNowUtc));
-        foreach (string name in new[] { "eventId", "peerId", "deletedUtc" })
-            Program.Check(tombstone.TryGetProperty(name, out _), "tombstone JSON contains " + name);
+        Program.Check(HasExactJsonProperties(tombstone, "eventId", "peerId", "deletedUtc"), "tombstone JSON has exactly the contract keys");
+
 
         var page = new HistorySyncPage(1, "request-1", PeerId, 0, new[] { Event() }, new[] { new HistoryTombstone("event-1", PeerId, FixedNowUtc) });
         JsonElement pageJson = JsonSerializer.SerializeToElement(page);
-        foreach (string name in new[] { "schemaVersion", "requestId", "peerId", "pageNumber", "entries", "tombstones" })
-            Program.Check(pageJson.TryGetProperty(name, out _), "sync page JSON contains " + name);
+        Program.Check(HasExactJsonProperties(pageJson, "schemaVersion", "requestId", "peerId", "pageNumber", "entries", "tombstones"), "sync page JSON has exactly the contract keys");
+
         Program.Check(page.SchemaVersion == 1, "version-one sync page contract");
     }
 
+    private static bool HasExactJsonProperties(JsonElement value, params string[] expected) =>
+        value.EnumerateObject().Select(property => property.Name).OrderBy(name => name, StringComparer.Ordinal)
+            .SequenceEqual(expected.OrderBy(name => name, StringComparer.Ordinal));
     private static HistorySyncEvent Event(
         int schemaVersion = 1,
         string eventId = "event-1",

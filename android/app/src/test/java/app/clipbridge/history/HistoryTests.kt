@@ -11,6 +11,7 @@ class HistoryTests {
     @Test fun retentionUsesUtcMillisecondsAndSevenDayExclusiveBoundary() {
         val nearBoundary = nowUtc - 6L * 24 * 60 * 60 * 1000 - 23L * 60 * 60 * 1000 - 59L * 60 * 1000
         assertTrue(HistoryPolicy.isVisible(nearBoundary, nowUtc))
+        assertTrue(HistoryPolicy.isVisible(nowUtc - HistoryPolicy.SEVEN_DAYS_MILLIS + 1, nowUtc))
         assertFalse(HistoryPolicy.isVisible(nowUtc - HistoryPolicy.SEVEN_DAYS_MILLIS, nowUtc))
         assertFalse(HistoryPolicy.isVisible(nowUtc + 1, nowUtc))
         invalid { HistoryPolicy.validateEvent(event(createdUtc = nowUtc + 1), peerId, nowUtc) }
@@ -55,6 +56,10 @@ class HistoryTests {
 
     @Test fun pageEnvelopeRejectsPeerMismatchWithAuthenticatedRoute() {
         val page = HistorySyncPage(1, "request-1", "peer-b", 0, listOf(event()), emptyList())
+        invalid { HistoryPolicy.validatePageEnvelope(page, peerId) }
+    }
+    @Test fun pageEnvelopeRejectsNegativePageNumber() {
+        val page = HistorySyncPage(1, "request-1", peerId, -1, listOf(event()), emptyList())
         invalid { HistoryPolicy.validatePageEnvelope(page, peerId) }
     }
     private fun event(
