@@ -4,6 +4,7 @@ using System.Reflection;
 using System.Security.Cryptography;
 using System.Text;
 using ClipBridge.Windows;
+using ClipBridge.Windows.History;
 
 internal static class Program
 {
@@ -109,6 +110,7 @@ internal static class Program
 
     static async Task RunAsync(string[] args)
     {
+        if (args.Length == 1 && args[0] == "--history") { HistoryTests.Run(); return; }
         if (args.Length == 1 && args[0] == "--pair-security") { await ExperienceTests.SessionCollisionAsync(); return; }
         if (args.Length == 2 && args[0] == "--experience-interop") { await ExperienceInterop.RunAsync(args[1]); return; }
         if (args.Length == 2 && args[0] == "--interop") { await InteropServerAsync(args[1]); return; }
