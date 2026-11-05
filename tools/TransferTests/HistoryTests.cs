@@ -1,5 +1,6 @@
 using System.Text;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using ClipBridge.Windows;
 using ClipBridge.Windows.History;
 
@@ -11,7 +12,7 @@ internal static class HistoryTests
     public static void AssertNoTextHistoryBeforeExplicitAction(HistoryStore first, string firstPeerId, HistoryStore second, string secondPeerId, long nowUtc)
     {
         Program.Check(first.GetRecent(firstPeerId, nowUtc).Count == 0 && second.GetRecent(secondPeerId, nowUtc).Count == 0,
-            "history startup does not capture clipboard contents before an explicit send");
+            "no history is recorded before an explicit text send");
     }
 
     public static void AssertPairedTextHistory(
@@ -37,8 +38,10 @@ internal static class HistoryTests
             "paired text records are partitioned by the remote peer");
         Program.Check(sent.SenderDeviceId == senderDeviceId && received.SenderDeviceId == senderDeviceId,
             "paired text records preserve the original sender identity");
-        Program.Check((sent.SenderDeviceId == senderDeviceId) != (received.SenderDeviceId == receiverDeviceId),
-            "local direction is opposite without mutating the shared event");
+        string senderDirection = sent.SenderDeviceId == senderDeviceId ? "sent" : "received";
+        string receiverDirection = received.SenderDeviceId == receiverDeviceId ? "sent" : "received";
+        Program.Check(senderDirection == "sent", "sender endpoint derives sent direction from its local device ID");
+        Program.Check(receiverDirection == "received", "receiver endpoint derives received direction from its local device ID");
         Program.Check(sent.State == "sent" && received.State == "sent" && sent.ContentType == "text" && received.ContentType == "text",
             "both endpoints store the same canonical text event state");
         Program.Check(sent.Text == text && received.Text == text && sent.Files.Length == 0 && received.Files.Length == 0,
@@ -61,7 +64,77 @@ internal static class HistoryTests
         StoreRecoversNoncanonicalTrailingJsonLine();
         StoreReplayRejectsConflictingEventPayload();
         StoreReplaySkipsInteriorConflictsWithoutChangingTheOriginal();
+        ClipboardReadMatcherRecognizesReadApis();
+        HistoryAndBackgroundTransportAvoidClipboardReads();
         Console.WriteLine("HISTORY TESTS PASSED");
+    }
+
+    private static readonly Regex WinFormsClipboardReadApi = new(
+        @"\bClipboard\s*\.\s*(?:GetText|ContainsText|GetDataObject|GetData|GetFileDropList)\s*\(",
+        RegexOptions.CultureInvariant | RegexOptions.Compiled);
+    private static readonly Regex AndroidClipboardReadApi = new(
+        @"\bgetPrimaryClip\s*\(|\.primaryClip\b",
+        RegexOptions.CultureInvariant | RegexOptions.Compiled);
+
+    private static void ClipboardReadMatcherRecognizesReadApis()
+    {
+        foreach (string readCall in new[]
+        {
+            "Clipboard.GetText()",
+            "Clipboard.ContainsText()",
+            "Clipboard.GetDataObject()",
+            "Clipboard.GetData(\"format\")",
+            "Clipboard.GetFileDropList()",
+            "clipboard.getPrimaryClip()",
+            "clipboard.primaryClip"
+        })
+            Program.Check(ContainsClipboardReadApi(readCall), "clipboard read matcher detects " + readCall);
+
+        Program.Check(!ContainsClipboardReadApi("clipboard.setPrimaryClip(clip)"),
+            "clipboard read matcher permits Android setPrimaryClip");
+        Program.Check(!ContainsClipboardReadApi("Clipboard.SetText(text)"),
+            "clipboard read matcher permits clipboard writes");
+    }
+
+    private static void HistoryAndBackgroundTransportAvoidClipboardReads()
+    {
+        string repositoryRoot = FindRepositoryRoot();
+        string windowsHistory = Path.Combine(repositoryRoot, "ClipBridge", "Windows", "History");
+        string androidHistory = Path.Combine(repositoryRoot, "android", "app", "src", "main", "java", "app", "clipbridge", "history");
+        string[] checkedFiles = Directory.EnumerateFiles(windowsHistory, "*.cs", SearchOption.AllDirectories)
+            .Concat(Directory.EnumerateFiles(androidHistory, "*.kt", SearchOption.AllDirectories))
+            .Concat(new[]
+            {
+                Path.Combine(repositoryRoot, "ClipBridge", "Windows", "SyncNode.cs"),
+                Path.Combine(repositoryRoot, "android", "app", "src", "main", "java", "app", "clipbridge", "network", "BridgeService.kt")
+            })
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+
+        foreach (string path in checkedFiles)
+        {
+            string source = File.ReadAllText(path);
+            Program.Check(!ContainsClipboardReadApi(source),
+                "history/background path does not read clipboard: " + Path.GetRelativePath(repositoryRoot, path));
+        }
+
+        // TrayAppContext is intentionally excluded: its clipboard read is only in the explicit PreviewClipboardAsync user action.
+    }
+
+    private static bool ContainsClipboardReadApi(string source) =>
+        WinFormsClipboardReadApi.IsMatch(source) || AndroidClipboardReadApi.IsMatch(source);
+
+    private static string FindRepositoryRoot()
+    {
+        DirectoryInfo? current = new(AppContext.BaseDirectory);
+        while (current != null)
+        {
+            if (File.Exists(Path.Combine(current.FullName, "ClipBridge.csproj")) && Directory.Exists(Path.Combine(current.FullName, "android")))
+                return current.FullName;
+            current = current.Parent;
+        }
+
+        throw new DirectoryNotFoundException("Could not locate the ClipBridge repository root for the clipboard architecture guard.");
     }
 
     private static void RetentionUsesUtcMilliseconds()
