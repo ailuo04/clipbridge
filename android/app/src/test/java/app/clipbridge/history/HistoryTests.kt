@@ -235,6 +235,20 @@ class HistoryTests {
         assertTrue(HistoryStore(root).getRecent(peerId, now).isEmpty())
     }
 
+    @Test fun storeReplayRejectsMalformedTombstoneAndKeepsPrecedingEvent() {
+        val root = temporaryFolder.newFolder("history-malformed-tombstone")
+        val now = System.currentTimeMillis()
+        val logFile = File(File(root, "history"), "events-v1.jsonl")
+        HistoryStore(root).upsert(HistoryLocalRecord(event(eventId = "valid-event", createdUtc = now)))
+        val validLog = logFile.readBytes()
+        val malformedOperation = """{"schemaVersion":1,"operation":"tombstone","record":null,"tombstone":{"eventId":"","peerId":"peer-a","deletedUtc":$now}}"""
+        logFile.appendText("$malformedOperation\n", StandardCharsets.UTF_8)
+
+        val reopened = HistoryStore(root)
+        assertEquals(listOf("valid-event"), reopened.getRecent(peerId, now).map { it.event.eventId })
+        assertTrue(reopened.getSyncSnapshot(peerId, now).tombstones.isEmpty())
+        assertArrayEquals(validLog, logFile.readBytes())
+    }
     @Test fun storeReplayRejectsConflictingEventPayload() {
         val root = temporaryFolder.newFolder("history-replay-conflict")
         val now = System.currentTimeMillis()

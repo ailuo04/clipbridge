@@ -186,7 +186,11 @@ class HistoryStore(filesDir: File, tempFileFactory: (() -> File)? = null, replac
                 referencesObject.keys().forEach { id -> references[id] = referencesObject.getString(id) }
                 applyUpsert(HistoryLocalRecord(event, references))
             }
-            TOMBSTONE_OPERATION -> applyTombstone(parseTombstone(operation.getJSONObject("tombstone")))
+            TOMBSTONE_OPERATION -> {
+                val tombstone = parseTombstone(operation.getJSONObject("tombstone"))
+                HistoryPolicy.validateTombstone(tombstone, tombstone.peerId)
+                applyTombstone(tombstone)
+            }
             else -> throw IllegalArgumentException("Invalid history operation")
         }
     }

@@ -26,16 +26,18 @@ internal sealed class HistoryStore
     private readonly string _logPath;
     private readonly object _pathGate;
     private readonly Action<string, string> _replaceAtomically;
+    private readonly Func<string> _tempPathFactory;
     private Dictionary<(string PeerId, string EventId), HistoryLocalRecord> _events = new();
     private readonly Dictionary<(string PeerId, string EventId), HistoryTombstone> _tombstones = new();
 
-    public HistoryStore(string? logPath = null, Action<string, string>? replaceAtomically = null)
+    public HistoryStore(string? logPath = null, Action<string, string>? replaceAtomically = null, Func<string>? tempPathFactory = null)
     {
         _logPath = string.IsNullOrWhiteSpace(logPath)
             ? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "ClipBridge", "history", "events-v1.jsonl")
             : Path.GetFullPath(logPath);
         _pathGate = PathGates.GetOrAdd(_logPath, static _ => new object());
         _replaceAtomically = replaceAtomically ?? ReplaceAtomically;
+        _tempPathFactory = tempPathFactory ?? (() => _logPath + ".tmp." + Guid.NewGuid().ToString("N"));
         lock (_pathGate) ReloadFromDisk();
     }
 
@@ -298,16 +300,16 @@ internal sealed class HistoryStore
     {
         string? directory = Path.GetDirectoryName(_logPath);
         if (!string.IsNullOrEmpty(directory)) Directory.CreateDirectory(directory);
-        string temporaryPath = _logPath + ".tmp." + Guid.NewGuid().ToString("N");
+        (string temporaryPath, FileStream temporaryStream) = CreateCompactionTempFile();
         try
         {
-            using (var stream = new FileStream(temporaryPath, FileMode.CreateNew, FileAccess.Write, FileShare.None))
+            using (temporaryStream)
             {
                 foreach (HistoryLocalRecord entry in retainedEvents.Values.OrderBy(item => item.Event.PeerId, StringComparer.Ordinal).ThenBy(item => item.Event.EventId, StringComparer.Ordinal))
-                    WriteLine(stream, CreateUpsertOperation(entry));
+                    WriteLine(temporaryStream, CreateUpsertOperation(entry));
                 foreach (HistoryTombstone tombstone in retainedTombstones.Values.OrderBy(item => item.PeerId, StringComparer.Ordinal).ThenBy(item => item.EventId, StringComparer.Ordinal))
-                    WriteLine(stream, CreateTombstoneOperation(tombstone));
-                stream.Flush(true);
+                    WriteLine(temporaryStream, CreateTombstoneOperation(tombstone));
+                temporaryStream.Flush(true);
             }
 
             _replaceAtomically(temporaryPath, _logPath);
@@ -318,6 +320,23 @@ internal sealed class HistoryStore
         }
     }
 
+    private (string Path, FileStream Stream) CreateCompactionTempFile()
+    {
+        while (true)
+        {
+            string candidate = _tempPathFactory();
+            if (!string.Equals(Path.GetDirectoryName(candidate), Path.GetDirectoryName(_logPath), OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal))
+                throw new IOException("Compaction temporary file must be a sibling of the history log.");
+            try
+            {
+                return (candidate, new FileStream(candidate, FileMode.CreateNew, FileAccess.Write, FileShare.None));
+            }
+            catch (IOException) when (File.Exists(candidate))
+            {
+                // A collision was not created by this call; retry without opening, truncating, or deleting it.
+            }
+        }
+    }
     private static void ReplaceAtomically(string temporaryPath, string destinationPath)
     {
         if (File.Exists(destinationPath)) File.Replace(temporaryPath, destinationPath, null);

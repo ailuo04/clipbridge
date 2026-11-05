@@ -18,6 +18,7 @@ internal static class HistoryTests
         UpsertTreatsEquivalentFileArraysAsSameEvent();
         MergeRejectsConflictingEventIdsAtomically();
         FailedCompactionPreservesMemoryAndDurableState();
+        CompactionTempCollisionPreservesPreexistingFile();
         StoreInstancesReloadBeforeCompaction();
         StoreReloadsPerPeerAndKeepsFilesWhenDeleting();
         StorePrunesExpiredRecordsAndRecoversTruncatedTail();
@@ -158,6 +159,35 @@ internal static class HistoryTests
             Program.Check(new HistoryStore(logPath).GetRecent(PeerId, now).Any(item => item.Event.EventId == "will-expire"), "failed compaction leaves durable log unchanged");
             string historyDirectory = Path.GetDirectoryName(logPath)!;
             Program.Check(!Directory.EnumerateFiles(historyDirectory, Path.GetFileName(logPath) + ".tmp.*").Any(), "failed compaction removes only its sibling temporary file");
+        }
+        finally { Directory.Delete(root, true); }
+    }
+    private static void CompactionTempCollisionPreservesPreexistingFile()
+    {
+        string root = Path.Combine(Path.GetTempPath(), "clipbridge-history-temp-collision-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        try
+        {
+            string historyDirectory = Path.Combine(root, "history");
+            Directory.CreateDirectory(historyDirectory);
+            string logPath = Path.Combine(historyDirectory, "events-v1.jsonl");
+            string preexisting = Path.Combine(historyDirectory, "events-v1.jsonl.tmp.collision");
+            byte[] sentinel = Encoding.UTF8.GetBytes("leave this file untouched");
+            File.WriteAllBytes(preexisting, sentinel);
+            string owned = Path.Combine(historyDirectory, "events-v1.jsonl.tmp.owned");
+            string[] candidates = { preexisting, owned };
+            int nextCandidate = 0;
+            long now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+            var store = new HistoryStore(logPath, tempPathFactory: () => candidates[nextCandidate++]);
+            store.Upsert(new HistoryLocalRecord(Event(eventId: "expired", createdUtc: now - HistoryPolicy.SevenDaysMilliseconds - 1), new Dictionary<string, string>()));
+            store.Upsert(new HistoryLocalRecord(Event(eventId: "retained", createdUtc: now), new Dictionary<string, string>()));
+
+            store.Prune(now);
+
+            Program.Check(nextCandidate == 2, "compaction retries a colliding temporary path");
+            Program.Check(File.ReadAllBytes(preexisting).SequenceEqual(sentinel), "compaction preserves pre-existing candidate bytes");
+            Program.Check(!File.Exists(owned), "compaction cleans up only its created temporary file after replacement");
+            Program.Check(store.GetRecent(PeerId, now).Single().Event.EventId == "retained", "compaction publishes retained history after temp collision");
         }
         finally { Directory.Delete(root, true); }
     }
