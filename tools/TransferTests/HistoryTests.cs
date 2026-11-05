@@ -15,6 +15,8 @@ internal static class HistoryTests
         RouteValidationBindsEventsToPeer();
         SyncContractUsesStableJsonNamesAndExcludesLocalPaths();
         PageEnvelopeValidationRejectsInvalidFields();
+        StoreReloadsPerPeerAndKeepsFilesWhenDeleting();
+        StorePrunesExpiredRecordsAndRecoversTruncatedTail();
         Console.WriteLine("HISTORY TESTS PASSED");
     }
 
@@ -61,6 +63,89 @@ internal static class HistoryTests
         RejectsInvalid(() => HistoryPolicy.ValidatePageEnvelope(missingEntries, PeerId), "missing page entries rejected");
         var missingTombstones = JsonSerializer.Deserialize<HistorySyncPage>("""{"schemaVersion":1,"requestId":"request-1","peerId":"peer-a","pageNumber":0,"entries":[]}""")!;
         RejectsInvalid(() => HistoryPolicy.ValidatePageEnvelope(missingTombstones, PeerId), "missing page tombstones rejected");
+    }
+    private static void StoreReloadsPerPeerAndKeepsFilesWhenDeleting()
+    {
+        string root = Path.Combine(Path.GetTempPath(), "clipbridge-history-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        try
+        {
+            string logPath = Path.Combine(root, "history", "events-v1.jsonl");
+            string localFile = Path.Combine(root, "received.txt");
+            File.WriteAllText(localFile, "keep these bytes");
+            long now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+            HistorySyncEvent first = Event(eventId: "first", createdUtc: now);
+            HistorySyncEvent otherPeer = Event(eventId: "other-peer", peerId: "peer-b", createdUtc: now);
+            var references = new Dictionary<string, string> { [first.EventId] = localFile };
+
+            var initial = new HistoryStore(logPath);
+            initial.Upsert(new HistoryLocalRecord(first, references));
+            initial.Upsert(new HistoryLocalRecord(first, references));
+            initial.Upsert(new HistoryLocalRecord(otherPeer, new Dictionary<string, string>()));
+
+            var reopened = new HistoryStore(logPath);
+            var recent = reopened.GetRecent(PeerId, now);
+            Program.Check(recent.Count == 1 && recent[0].Event.EventId == "first", "history reload is idempotent and indexed per peer");
+            Program.Check(recent[0].LocalFileReferences[first.EventId] == localFile, "local file reference survives history reload");
+            Program.Check(reopened.GetRecent("peer-b", now).Single().Event.EventId == "other-peer", "peer query returns only that peer's history");
+            HistoryStoreSnapshot beforeDeleteSnapshot = reopened.GetSyncSnapshot(PeerId, now);
+            Program.Check(beforeDeleteSnapshot.Entries.Select(item => item.EventId).SequenceEqual(new[] { "first" }), "sync snapshot contains only the requested peer entries");
+            string snapshotJson = JsonSerializer.Serialize(beforeDeleteSnapshot);
+            Program.Check(!snapshotJson.Contains(localFile, StringComparison.Ordinal), "sync snapshot excludes local file references");
+
+            reopened.DeleteRecord(PeerId, first.EventId, now);
+            Program.Check(reopened.GetRecent(PeerId, now).Count == 0, "manual deletion removes visible history record");
+            Program.Check(File.Exists(localFile) && File.ReadAllText(localFile) == "keep these bytes", "manual history deletion preserves the local file");
+            Program.Check(reopened.GetSyncSnapshot(PeerId, now).Tombstones.Any(item => item.EventId == first.EventId), "manual deletion creates a sync tombstone");
+            reopened.Upsert(new HistoryLocalRecord(first, references));
+            Program.Check(reopened.GetRecent(PeerId, now).Count == 0, "tombstone prevents a later upsert from resurrecting history");
+
+            HistorySyncEvent remoteDeleted = Event(eventId: "remote-deleted", createdUtc: now);
+            reopened.Upsert(new HistoryLocalRecord(remoteDeleted, new Dictionary<string, string> { [remoteDeleted.EventId] = localFile }));
+            reopened.Merge(PeerId, new[] { remoteDeleted }, new[] { new HistoryTombstone(remoteDeleted.EventId, PeerId, now) }, now);
+            Program.Check(reopened.GetRecent(PeerId, now).Count == 0, "remote tombstone dominates matching event during merge");
+            Program.Check(File.Exists(localFile), "remote tombstone merge preserves referenced local file");
+
+            reopened.Upsert(new HistoryLocalRecord(Event(eventId: "expired-after-tombstones", createdUtc: now), new Dictionary<string, string>()));
+            reopened.Prune(now + HistoryPolicy.SevenDaysMilliseconds);
+
+            var afterDeleteReload = new HistoryStore(logPath);
+            HistoryStoreSnapshot snapshot = afterDeleteReload.GetSyncSnapshot(PeerId, now);
+            Program.Check(snapshot.Tombstones.Select(item => item.EventId).OrderBy(id => id, StringComparer.Ordinal).SequenceEqual(new[] { "first", "remote-deleted" }), "manual and remote tombstones survive restart");
+            Program.Check(afterDeleteReload.GetRecent(PeerId, now).Count == 0, "deleted history does not reappear after restart");
+        }
+        finally { Directory.Delete(root, true); }
+    }
+
+    private static void StorePrunesExpiredRecordsAndRecoversTruncatedTail()
+    {
+        string root = Path.Combine(Path.GetTempPath(), "clipbridge-history-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        try
+        {
+            string logPath = Path.Combine(root, "history", "events-v1.jsonl");
+            string localFile = Path.Combine(root, "received.bin");
+            File.WriteAllText(localFile, "keep after prune");
+            long now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+            HistorySyncEvent expired = Event(eventId: "expired", createdUtc: now - HistoryPolicy.SevenDaysMilliseconds);
+            HistorySyncEvent visible = Event(eventId: "visible", createdUtc: now - HistoryPolicy.SevenDaysMilliseconds + 1);
+            var store = new HistoryStore(logPath);
+            store.Upsert(new HistoryLocalRecord(expired, new Dictionary<string, string> { [expired.EventId] = localFile }));
+            store.Upsert(new HistoryLocalRecord(visible, new Dictionary<string, string> { [visible.EventId] = localFile }));
+            store.Prune(now);
+            Program.Check(store.GetRecent(PeerId, now).Select(item => item.Event.EventId).SequenceEqual(new[] { "visible" }), "prune expires seven-day boundary and retains one-millisecond-inside event");
+            Program.Check(File.Exists(localFile) && File.ReadAllText(localFile) == "keep after prune", "seven-day pruning preserves referenced local files");
+            Program.Check(new HistoryStore(logPath).GetRecent(PeerId, now).Single().Event.EventId == "visible", "pruned records stay absent after restart");
+
+            byte[] validLog = File.ReadAllBytes(logPath);
+            File.AppendAllText(logPath, "{\"schemaVersion\":1,\"operation\":\"upsert\",\"record\":", Encoding.UTF8);
+            var recovered = new HistoryStore(logPath);
+            Program.Check(recovered.GetRecent(PeerId, now).Single().Event.EventId == "visible", "truncated final JSONL line is ignored");
+            Program.Check(File.ReadAllBytes(logPath).SequenceEqual(validLog), "truncated final JSONL line is repaired without losing valid history");
+            recovered.Upsert(new HistoryLocalRecord(Event(eventId: "after-recovery", createdUtc: now), new Dictionary<string, string>()));
+            Program.Check(new HistoryStore(logPath).GetRecent(PeerId, now).Count == 2, "store remains writable after repairing truncated tail");
+        }
+        finally { Directory.Delete(root, true); }
     }
     private static void SyncContractUsesStableJsonNamesAndExcludesLocalPaths()
     {
