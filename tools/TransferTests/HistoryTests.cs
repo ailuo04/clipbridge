@@ -8,6 +8,42 @@ internal static class HistoryTests
     private const long FixedNowUtc = 1_800_000_000_000;
     private const string PeerId = "peer-a";
 
+    public static void AssertNoTextHistoryBeforeExplicitAction(HistoryStore first, string firstPeerId, HistoryStore second, string secondPeerId, long nowUtc)
+    {
+        Program.Check(first.GetRecent(firstPeerId, nowUtc).Count == 0 && second.GetRecent(secondPeerId, nowUtc).Count == 0,
+            "history startup does not capture clipboard contents before an explicit send");
+    }
+
+    public static void AssertPairedTextHistory(
+        HistoryStore senderStore,
+        string senderDeviceId,
+        string receiverDeviceId,
+        HistoryStore receiverStore,
+        string text,
+        long sendStartedUtc,
+        long sendCompletedUtc)
+    {
+        IReadOnlyList<HistoryLocalRecord> senderEntries = senderStore.GetRecent(receiverDeviceId, sendCompletedUtc);
+        IReadOnlyList<HistoryLocalRecord> receiverEntries = receiverStore.GetRecent(senderDeviceId, sendCompletedUtc);
+        Program.Check(senderEntries.Count == 1, "explicit text send creates exactly one sender history record");
+        Program.Check(receiverEntries.Count == 1, "trusted text receive creates exactly one receiver history record");
+
+        HistorySyncEvent sent = senderEntries[0].Event;
+        HistorySyncEvent received = receiverEntries[0].Event;
+        Program.Check(sent.EventId == received.EventId, "paired text records share the original message ID");
+        Program.Check(sent.CreatedUtc == received.CreatedUtc && sent.CreatedUtc >= sendStartedUtc && sent.CreatedUtc <= sendCompletedUtc,
+            "paired text records preserve the original message timestamp");
+        Program.Check(sent.PeerId == receiverDeviceId && received.PeerId == senderDeviceId,
+            "paired text records are partitioned by the remote peer");
+        Program.Check(sent.SenderDeviceId == senderDeviceId && received.SenderDeviceId == senderDeviceId,
+            "paired text records preserve the original sender identity");
+        Program.Check((sent.SenderDeviceId == senderDeviceId) != (received.SenderDeviceId == receiverDeviceId),
+            "local direction is opposite without mutating the shared event");
+        Program.Check(sent.State == "sent" && received.State == "sent" && sent.ContentType == "text" && received.ContentType == "text",
+            "both endpoints store the same canonical text event state");
+        Program.Check(sent.Text == text && received.Text == text && sent.Files.Length == 0 && received.Files.Length == 0,
+            "paired text records contain the original text and no file events");
+    }
     public static void Run()
     {
         RetentionUsesUtcMilliseconds();

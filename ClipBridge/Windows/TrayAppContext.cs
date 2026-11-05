@@ -9,6 +9,7 @@ using System.Runtime.InteropServices;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Windows.Forms;
+using ClipBridge.Windows.History;
 
 namespace ClipBridge.Windows;
 
@@ -22,6 +23,7 @@ internal sealed class TrayAppContext : ApplicationContext
 
 	private readonly SyncNode _node;
     private readonly DeviceHub _devices;
+    private readonly HistoryStore? _history;
     private DevicesForm? _devicesForm;
 
 	private readonly FileTransferNode _files;
@@ -79,7 +81,8 @@ internal sealed class TrayAppContext : ApplicationContext
 		_themeController.RefreshSystemTheme();
 		_pairingKey = ProtectedKeyStore.LoadOrCreate();
 		_devices = new DeviceHub(new WindowsTrustStore(), _pairingKey);
-        _node = new SyncNode(_pairingKey, Dispatch, discovery: false, hub: _devices);
+		try { _history = new HistoryStore(); } catch { _history = null; }
+		_node = new SyncNode(_pairingKey, Dispatch, discovery: false, hub: _devices, historyStore: _history);
         _devices.LegacyDiscovered += _node.DiscoveredLegacy;
 		_panel = CreatePanel(Convert.ToHexString(_pairingKey));
 		_files = new FileTransferNode(_pairingKey, _receiveDirectory, QueueFileRequestAsync, hub: _devices);

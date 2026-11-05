@@ -4,6 +4,7 @@ using System.Linq;
 using System.Security.Cryptography;
 using System.Text;
 using ClipBridge.Windows;
+using ClipBridge.Windows.History;
 
 internal static class ExperienceTests
 {
@@ -33,11 +34,24 @@ internal static class ExperienceTests
         Program.Check(a.Records().Single().Active && b.Records().Single().Active && a.Records().Single().Key.SequenceEqual(b.Records().Single().Key),"two explicit confirmations commit the same independent device key");
         ah.Nearby[b.DeviceId]=peer with { Authenticated=true,Seen=DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() };
         bh.Nearby[a.DeviceId]=new(a.DeviceId,a.Name,"windows","127.0.0.1",DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),true);
-        using var receiver=new SyncNode(legacy,x=>x(),0,false,bh); using var sender=new SyncNode(legacy,x=>x(),0,false,ah);
-        string? received=null; receiver.RemoteTextReceived+=value=>received=value;
-        await sender.SendTextAsync(System.Net.IPAddress.Loopback,"独立设备密钥文字",System.Threading.CancellationToken.None,receiver.Port);
-        for(int n=0;n<100 && received==null;n++) await System.Threading.Tasks.Task.Delay(10);
-        Program.Check(received=="独立设备密钥文字","production text channel uses authenticated per-device routing");
+        string historyRoot=Path.Combine(Path.GetTempPath(),"clipbridge-text-history-"+Guid.NewGuid().ToString("N")); Directory.CreateDirectory(historyRoot);
+        try
+        {
+            var aHistory=new HistoryStore(Path.Combine(historyRoot,"a","history","events-v1.jsonl"));
+            var bHistory=new HistoryStore(Path.Combine(historyRoot,"b","history","events-v1.jsonl"));
+
+            using var receiver=new SyncNode(legacy,x=>x(),0,false,bh,bHistory); using var sender=new SyncNode(legacy,x=>x(),0,false,ah,aHistory);
+            HistoryTests.AssertNoTextHistoryBeforeExplicitAction(aHistory,b.DeviceId,bHistory,a.DeviceId,DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
+            string? received=null; receiver.RemoteTextReceived+=value=>received=value;
+            const string sentText="独立设备密钥文字";
+            long sendStarted=DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+            await sender.SendTextAsync(System.Net.IPAddress.Loopback,sentText,System.Threading.CancellationToken.None,receiver.Port);
+            long sendCompleted=DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+            for(int n=0;n<100 && (received==null || aHistory.GetRecent(b.DeviceId,sendCompleted).Count==0 || bHistory.GetRecent(a.DeviceId,sendCompleted).Count==0);n++) await System.Threading.Tasks.Task.Delay(10);
+            Program.Check(received==sentText,"production text channel uses authenticated per-device routing");
+            HistoryTests.AssertPairedTextHistory(aHistory,a.DeviceId,b.DeviceId,bHistory,sentText,sendStarted,sendCompleted);
+        }
+        finally { if(Directory.Exists(historyRoot) && Path.GetFullPath(historyRoot).StartsWith(Path.GetFullPath(Path.GetTempPath()),StringComparison.OrdinalIgnoreCase)) Directory.Delete(historyRoot,true); }
         string sandbox=Path.Combine(Path.GetTempPath(),"clipbridge-preface-"+Guid.NewGuid().ToString("N")); Directory.CreateDirectory(sandbox);
         try
         {

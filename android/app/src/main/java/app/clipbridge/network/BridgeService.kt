@@ -10,6 +10,7 @@ import android.net.Uri
 import android.net.wifi.WifiManager
 import android.os.IBinder
 import app.clipbridge.MainActivity
+import app.clipbridge.history.*
 import app.clipbridge.protocol.*
 import app.clipbridge.storage.PairingStore
 import org.json.JSONObject
@@ -40,6 +41,7 @@ class BridgeService : Service() {
     private var pairing: ByteArray?=null
     private var textKey: ByteArray?=null
     private lateinit var store: PairingStore
+    private val history: HistoryStore by lazy(LazyThreadSafetyMode.SYNCHRONIZED) { HistoryStore(filesDir) }
     private lateinit var files: FileTransfers
     override fun onBind(intent: Intent?): IBinder?=null
     override fun onCreate() { super.onCreate(); current=this; store=PairingStore(this) }
@@ -86,12 +88,13 @@ class BridgeService : Service() {
             socket.soTimeout=5000
             val route=hub!!.incoming(socket,1,textKey); route.source?.let { socketPeers[socket]=it }
             val value=JSONObject(BridgeProtocol.read(route.input,route.key).toString(Charsets.UTF_8))
-            val id=value.getString("MessageId"); val origin=value.getString("OriginDeviceId"); val text=value.getString("Text")
-            require(value.getString("Type")=="clipboard" && id.length in 1..64 && origin.length in 1..64 && origin!=store.deviceId() && (route.source==null || route.source==origin) && text.isNotEmpty() && text.toByteArray().size<=BridgeProtocol.MAX_TEXT && BridgeProtocol.fresh(value.getLong("TimestampUtc")))
+            val id=value.getString("MessageId"); val origin=value.getString("OriginDeviceId"); val text=value.getString("Text"); val timestampUtc=value.getLong("TimestampUtc")
+            require(value.getString("Type")=="clipboard" && id.length in 1..64 && origin.length in 1..64 && origin!=store.deviceId() && (route.source==null || route.source==origin) && text.isNotEmpty() && text.toByteArray().size<=BridgeProtocol.MAX_TEXT && BridgeProtocol.fresh(timestampUtc))
             require(!isSecret(text))
             if(route.source!=null) require(store.records().any { it.id==route.source && it.active })
             seenText.entries.removeIf { System.currentTimeMillis()-it.value>600000 }
             require(seenText.size<2048 && seenText.putIfAbsent(id,System.currentTimeMillis())==null)
+            route.source?.takeIf { hub?.isTrusted(it)==true }?.let { peerId -> recordTextHistory(peerId,id,origin,timestampUtc,text) }
             receivedText=text
             try { getSystemService(ClipboardManager::class.java).setPrimaryClip(ClipData.newPlainText("ClipBridge",text)); setStatus("已接收文字并写入剪贴板") }
             catch(_: Exception) { setStatus("已接收文字，请打开互传点击复制") }
@@ -103,20 +106,34 @@ class BridgeService : Service() {
         require(!isSecret(text)) { "不能发送配对密钥" }; check(sending.compareAndSet(false,true)) { "已有发送任务，请稍后重试" }
         workers.execute {
             try {
+                var sentRecord: Triple<String,String,Long>? = null
                 Socket().use { socket -> sockets.add(socket)
                     try {
                         socket.connect(InetSocketAddress(host,BridgeProtocol.TEXT_PORT),5000); socket.soTimeout=5000
-                        hub?.nearby?.values?.firstOrNull { it.address==host && it.authenticated }?.let { socketPeers[socket]=it.id }
+                        val activeHub=hub
+                        val peerId=if(activeHub==null) null else activeHub.nearby.values.firstOrNull { it.address==host && it.authenticated && System.currentTimeMillis()-it.seen<=15000 && activeHub.isTrusted(it.id) }?.id
+                        peerId?.let { socketPeers[socket]=it }
                         val key=hub!!.outgoing(socket,1,textKey)
-                        val message=JSONObject().put("Type","clipboard").put("MessageId",UUID.randomUUID().toString().replace("-","")).put("OriginDeviceId",store.deviceId()).put("Text",text).put("TimestampUtc",System.currentTimeMillis())
+                        val messageId=UUID.randomUUID().toString().replace("-","")
+                        val timestampUtc=System.currentTimeMillis()
+                        val origin=store.deviceId()
+                        val message=JSONObject().put("Type","clipboard").put("MessageId",messageId).put("OriginDeviceId",origin).put("Text",text).put("TimestampUtc",timestampUtc)
                         BridgeProtocol.writeJson(socket.getOutputStream(),key,message)
+                        if(peerId!=null && activeHub?.isTrusted(peerId)==true) sentRecord=Triple(peerId,messageId,timestampUtc)
                     } finally { sockets.remove(socket); socketPeers.remove(socket) }
                 }
                 setStatus("文字已发送，请在目标设备确认")
+                sentRecord?.let { (peerId,messageId,timestampUtc) -> recordTextHistory(peerId,messageId,store.deviceId(),timestampUtc,text) }
             } catch(_: Exception) { setStatus("文字发送失败，请检查设备、配对和网络") }
             finally { sending.set(false) }
         }
     }
+    private fun recordTextHistory(peerId: String,eventId: String,senderDeviceId: String,createdUtc: Long,text: String) {
+        try {
+            history.upsert(HistoryLocalRecord(HistorySyncEvent(HistoryPolicy.SCHEMA_VERSION,eventId,peerId,senderDeviceId,createdUtc,"text",text,emptyList(),"sent")))
+        } catch(_: Exception) { setStatus("文字已传输，但历史记录保存失败") }
+    }
+
     fun sendFiles(host: String,uris: List<Uri>) {
         require(BridgeProtocol.isLocal(host)) { "请选择目标设备" }; check(::files.isInitialized && sending.compareAndSet(false,true)) { "服务准备中或已有发送任务" }
         workers.execute { try { files.send(host,uris) } finally { sending.set(false) } }

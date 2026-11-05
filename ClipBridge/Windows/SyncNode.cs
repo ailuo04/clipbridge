@@ -10,6 +10,7 @@ using System.Text;
 using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
+using ClipBridge.Windows.History;
 
 namespace ClipBridge.Windows;
 
@@ -18,6 +19,7 @@ internal sealed class SyncNode : IDisposable
     private sealed record Peer(IPEndPoint EndPoint, DateTimeOffset LastSeen, bool Manual = false, string Name = "");
     private readonly byte[] _key;
     private readonly DeviceHub? _hub;
+    private readonly HistoryStore? _historyStore;
     private readonly string _pairingKeyText;
     private readonly string _deviceId = Guid.NewGuid().ToString("N");
     private readonly ConcurrentDictionary<string, Peer> _peers = new();
@@ -32,9 +34,10 @@ internal sealed class SyncNode : IDisposable
     public event Action<string>? RemoteTextReceived;
     public event Action<string>? StatusChanged;
 
-    public SyncNode(byte[] pairingKey, Action<Action> dispatchToUi, int textPort = SharedProtocol.TcpPort, bool discovery = true, DeviceHub? hub = null)
+    public SyncNode(byte[] pairingKey, Action<Action> dispatchToUi, int textPort = SharedProtocol.TcpPort, bool discovery = true, DeviceHub? hub = null, HistoryStore? historyStore = null)
     {
         _hub = hub;
+        _historyStore = historyStore;
         _deviceId = hub?.DeviceId ?? _deviceId;
         _key = SharedProtocol.DeriveKey(pairingKey);
         _pairingKeyText = Convert.ToHexString(pairingKey);
@@ -100,10 +103,20 @@ internal sealed class SyncNode : IDisposable
             using var client = new TcpClient(AddressFamily.InterNetwork);
             await client.ConnectAsync(address, port, deadline.Token);
             var message = new ClipboardMessage("clipboard", Guid.NewGuid().ToString("N"), _deviceId, text, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
+            DeviceHub? hub = _hub;
+            string? authenticatedPeerId = null;
+            if (hub != null)
+            {
+                NearbyDevice? peer = hub.Nearby.Values.FirstOrDefault(candidate => candidate.Address == address.ToString() &&
+                    candidate.Authenticated && DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() - candidate.Seen <= 15000);
+                if (peer != null && hub.IsTrusted(peer.Id)) authenticatedPeerId = peer.Id;
+            }
             byte[] key = _hub == null ? _key : await _hub.OutgoingAsync(client.GetStream(), address, 1, _key, deadline.Token);
+            if (authenticatedPeerId != null && _hub?.IsTrusted(authenticatedPeerId) != true) authenticatedPeerId = null;
             byte[] frame = SharedProtocol.Frame(SharedProtocol.Encrypt(key, SharedProtocol.Serialize(message)));
             await client.GetStream().WriteAsync(frame, deadline.Token);
             Report("文字已发送，接收结果请在目标设备确认");
+            if (authenticatedPeerId != null) RecordTextHistory(authenticatedPeerId, message);
             return true;
         }
         catch (OperationCanceledException) when (token.IsCancellationRequested || _stop.IsCancellationRequested) { throw; }
@@ -199,12 +212,22 @@ internal sealed class SyncNode : IDisposable
                 await stream.ReadExactlyAsync(frame, deadline.Token);
                 var m = JsonSerializer.Deserialize<ClipboardMessage>(SharedProtocol.Decrypt(route.Key, frame));
                 if (m == null || m.Type != "clipboard" || (route.Source != null && route.Source != m.OriginDeviceId) || m.OriginDeviceId == _deviceId || string.IsNullOrEmpty(m.MessageId) || m.MessageId.Length > 64 || string.IsNullOrEmpty(m.OriginDeviceId) || m.OriginDeviceId.Length > 64 || string.IsNullOrEmpty(m.Text) || Encoding.UTF8.GetByteCount(m.Text) > SharedProtocol.MaxTextBytes || !SharedProtocol.IsFresh(m.TimestampUtc) || string.Equals(m.Text.Trim(), _pairingKeyText, StringComparison.OrdinalIgnoreCase) || !RememberMessage(m.MessageId)) return;
+                if (route.Source != null && _hub?.IsTrusted(route.Source) == true) RecordTextHistory(route.Source, m);
                 _dispatchToUi(() => { if (!_disposed && (route.Source == null || _hub!.IsTrusted(route.Source))) RemoteTextReceived?.Invoke(m.Text); });
             }
             catch (Exception ex) when (ex is IOException || ex is SocketException || ex is CryptographicException || ex is JsonException || ex is OperationCanceledException)
             { if (!token.IsCancellationRequested) Report("一条文字未能接收，请检查配对和网络"); }
             finally { _connections.Release(); }
         }
+    }
+
+    private void RecordTextHistory(string peerId, ClipboardMessage message)
+    {
+        if (_historyStore == null) { try { Report("文字已传输，但历史记录不可用"); } catch { } return; }
+        var value = new HistorySyncEvent(HistoryPolicy.SchemaVersion, message.MessageId, peerId, message.OriginDeviceId,
+            message.TimestampUtc, "text", message.Text, Array.Empty<HistoryFileMetadata>(), "sent");
+        try { _historyStore.Upsert(new HistoryLocalRecord(value, new Dictionary<string, string>())); }
+        catch { try { Report("文字已传输，但历史记录保存失败"); } catch { } }
     }
 
     private bool RememberMessage(string id)
