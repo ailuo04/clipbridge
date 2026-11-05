@@ -194,6 +194,24 @@ class HistoryTests {
         assertEquals("original", reopened.getRecent(peerId, now).single().event.text)
         assertArrayEquals(validLog, logFile.readBytes())
     }
+    @Test fun storeReplaySkipsInteriorConflictsWithoutChangingTheOriginal() {
+        val root = temporaryFolder.newFolder("history-interior-conflict")
+        val now = System.currentTimeMillis()
+        val logFile = File(File(root, "history"), "events-v1.jsonl")
+        HistoryStore(root).upsert(HistoryLocalRecord(event(eventId = "immutable", createdUtc = now, text = "original")))
+
+        fun conflictingUpsert(text: String) = """{"schemaVersion":1,"operation":"upsert","record":{"event":{"schemaVersion":1,"eventId":"immutable","peerId":"peer-a","senderDeviceId":"device-a","createdUtc":$now,"contentType":"text","text":"$text","files":[],"state":"sent"},"localFileReferences":{}},"tombstone":null}"""
+        logFile.appendText(conflictingUpsert("interior-conflict") + "\n", StandardCharsets.UTF_8)
+        HistoryStore(root).upsert(HistoryLocalRecord(event(eventId = "unrelated", createdUtc = now)))
+        val logBeforeTrailingConflict = logFile.readBytes()
+        logFile.appendText(conflictingUpsert("later-conflict") + "\n", StandardCharsets.UTF_8)
+
+        val reopened = HistoryStore(root)
+        val entries = reopened.getRecent(peerId, now)
+        assertEquals("original", entries.single { it.event.eventId == "immutable" }.event.text)
+        assertTrue(entries.any { it.event.eventId == "unrelated" })
+        assertArrayEquals(logBeforeTrailingConflict, logFile.readBytes())
+    }
     @Test fun storeRecoversNoncanonicalTrailingJsonLine() {
         val root = temporaryFolder.newFolder("history-case-recovery")
         val now = System.currentTimeMillis()

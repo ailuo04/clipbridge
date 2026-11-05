@@ -23,6 +23,7 @@ internal static class HistoryTests
         StorePrunesExpiredRecordsAndRecoversTruncatedTail();
         StoreRecoversNoncanonicalTrailingJsonLine();
         StoreReplayRejectsConflictingEventPayload();
+        StoreReplaySkipsInteriorConflictsWithoutChangingTheOriginal();
         Console.WriteLine("HISTORY TESTS PASSED");
     }
 
@@ -322,6 +323,43 @@ internal static class HistoryTests
         }
         finally { Directory.Delete(root, true); }
     }
+    private static void StoreReplaySkipsInteriorConflictsWithoutChangingTheOriginal()
+    {
+        string root = Path.Combine(Path.GetTempPath(), "clipbridge-history-interior-conflict-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        try
+        {
+            string logPath = Path.Combine(root, "history", "events-v1.jsonl");
+            long now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+            HistorySyncEvent original = Event(eventId: "immutable", createdUtc: now, text: "original");
+            new HistoryStore(logPath).Upsert(new HistoryLocalRecord(original, new Dictionary<string, string>()));
+
+            File.AppendAllText(logPath, UpsertLogOperation(Event(eventId: "immutable", createdUtc: now, text: "interior-conflict")) + "\n", Encoding.UTF8);
+            var storeAfterInteriorConflict = new HistoryStore(logPath);
+            storeAfterInteriorConflict.Upsert(new HistoryLocalRecord(Event(eventId: "unrelated", createdUtc: now), new Dictionary<string, string>()));
+            byte[] logBeforeTrailingConflict = File.ReadAllBytes(logPath);
+            File.AppendAllText(logPath, UpsertLogOperation(Event(eventId: "immutable", createdUtc: now, text: "later-conflict")) + "\n", Encoding.UTF8);
+
+            var reopened = new HistoryStore(logPath);
+            IReadOnlyList<HistoryLocalRecord> entries = reopened.GetRecent(PeerId, now);
+            Program.Check(entries.Single(item => item.Event.EventId == "immutable").Event.Text == "original", "interior and later conflicting upserts never replace the original payload");
+            Program.Check(entries.Any(item => item.Event.EventId == "unrelated"), "valid operation after an interior conflict is replayed");
+            Program.Check(File.ReadAllBytes(logPath).SequenceEqual(logBeforeTrailingConflict), "later trailing conflict is truncated while interior conflict remains recoverable");
+        }
+        finally { Directory.Delete(root, true); }
+    }
+
+    private static string UpsertLogOperation(HistorySyncEvent value) => JsonSerializer.Serialize(new Dictionary<string, object?>
+    {
+        ["schemaVersion"] = 1,
+        ["operation"] = "upsert",
+        ["record"] = new Dictionary<string, object?>
+        {
+            ["event"] = value,
+            ["localFileReferences"] = new Dictionary<string, string>()
+        },
+        ["tombstone"] = null
+    });
     private static void SyncContractUsesStableJsonNamesAndExcludesLocalPaths()
     {
         JsonElement entry = JsonSerializer.SerializeToElement(Event());
