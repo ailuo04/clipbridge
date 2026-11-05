@@ -228,16 +228,20 @@ class HistoryStore(filesDir: File, replaceFile: ((File, File) -> Unit)? = null) 
     private fun compact(retainedEvents: Map<Key, HistoryLocalRecord>, retainedTombstones: Map<Key, HistoryTombstone>) {
         logFile.parentFile?.mkdirs()
         val temporary = File(logFile.parentFile, "${logFile.name}.tmp.${UUID.randomUUID()}")
-        FileOutputStream(temporary, false).use { stream ->
-            retainedEvents.values
-                .sortedWith(compareBy<HistoryLocalRecord> { it.event.peerId }.thenBy { it.event.eventId })
-                .forEach { stream.write((operationForUpsert(it).toString() + "\n").toByteArray(StandardCharsets.UTF_8)) }
-            retainedTombstones.values
-                .sortedWith(compareBy<HistoryTombstone> { it.peerId }.thenBy { it.eventId })
-                .forEach { stream.write((operationForTombstone(it).toString() + "\n").toByteArray(StandardCharsets.UTF_8)) }
-            stream.fd.sync()
+        try {
+            FileOutputStream(temporary, false).use { stream ->
+                retainedEvents.values
+                    .sortedWith(compareBy<HistoryLocalRecord> { it.event.peerId }.thenBy { it.event.eventId })
+                    .forEach { stream.write((operationForUpsert(it).toString() + "\n").toByteArray(StandardCharsets.UTF_8)) }
+                retainedTombstones.values
+                    .sortedWith(compareBy<HistoryTombstone> { it.peerId }.thenBy { it.eventId })
+                    .forEach { stream.write((operationForTombstone(it).toString() + "\n").toByteArray(StandardCharsets.UTF_8)) }
+                stream.fd.sync()
+            }
+            atomicReplace(temporary, logFile)
+        } finally {
+            Files.deleteIfExists(temporary.toPath())
         }
-        atomicReplace(temporary, logFile)
     }
 
     private fun truncateLog(length: Int) {

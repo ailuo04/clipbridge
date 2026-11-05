@@ -156,6 +156,8 @@ internal static class HistoryTests
             Program.Rejects<IOException>(() => failing.Prune(now + HistoryPolicy.SevenDaysMilliseconds + 1), "failed compaction reports atomic replace failure");
             Program.Check(failing.GetRecent(PeerId, now).Any(item => item.Event.EventId == "will-expire"), "failed compaction leaves the pre-prune in-memory record visible");
             Program.Check(new HistoryStore(logPath).GetRecent(PeerId, now).Any(item => item.Event.EventId == "will-expire"), "failed compaction leaves durable log unchanged");
+            string historyDirectory = Path.GetDirectoryName(logPath)!;
+            Program.Check(!Directory.EnumerateFiles(historyDirectory, Path.GetFileName(logPath) + ".tmp.*").Any(), "failed compaction removes only its sibling temporary file");
         }
         finally { Directory.Delete(root, true); }
     }
@@ -167,16 +169,46 @@ internal static class HistoryTests
         {
             string logPath = Path.Combine(root, "history", "events-v1.jsonl");
             long now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
-            var first = new HistoryStore(logPath);
+            using var replaceEntered = new ManualResetEventSlim();
+            using var allowReplace = new ManualResetEventSlim();
+            using var appendStarted = new ManualResetEventSlim();
+            var first = new HistoryStore(logPath, (temporaryPath, destinationPath) =>
+            {
+                replaceEntered.Set();
+                if (!allowReplace.Wait(TimeSpan.FromSeconds(10))) throw new TimeoutException("Test did not release compaction replace.");
+                File.Replace(temporaryPath, destinationPath, null);
+            });
             var second = new HistoryStore(logPath);
             first.Upsert(new HistoryLocalRecord(Event(eventId: "a-survivor", createdUtc: now), new Dictionary<string, string>()));
             first.Upsert(new HistoryLocalRecord(Event(eventId: "expired", createdUtc: now - HistoryPolicy.SevenDaysMilliseconds - 1), new Dictionary<string, string>()));
-            second.Upsert(new HistoryLocalRecord(Event(eventId: "b-survivor", createdUtc: now), new Dictionary<string, string>()));
 
-            first.Prune(now);
-            var reopened = new HistoryStore(logPath);
-            Program.Check(reopened.GetRecent(PeerId, now).Select(item => item.Event.EventId).OrderBy(id => id, StringComparer.Ordinal)
-                .SequenceEqual(new[] { "a-survivor", "b-survivor" }), "compaction from one instance preserves entries appended by another instance");
+            Task? pruneTask = null;
+            Task? appendTask = null;
+            try
+            {
+                pruneTask = Task.Run(() => first.Prune(now));
+                Program.Check(replaceEntered.Wait(TimeSpan.FromSeconds(5)), "compaction reached atomic replace pause");
+                appendTask = Task.Run(() =>
+                {
+                    appendStarted.Set();
+                    second.Upsert(new HistoryLocalRecord(Event(eventId: "b-survivor", createdUtc: now), new Dictionary<string, string>()));
+                });
+                Program.Check(appendStarted.Wait(TimeSpan.FromSeconds(5)), "concurrent append task started");
+                // The bounded wait gives the signaled append thread time to contend for the shared path gate.
+                Program.Check(!appendTask.Wait(TimeSpan.FromMilliseconds(100)), "append cannot finish while compaction holds the path gate");
+
+                allowReplace.Set();
+                Program.Check(Task.WaitAll(new[] { pruneTask, appendTask }, TimeSpan.FromSeconds(10)), "compaction and blocked append both finish after release");
+                var reopened = new HistoryStore(logPath);
+                Program.Check(reopened.GetRecent(PeerId, now).Select(item => item.Event.EventId).OrderBy(id => id, StringComparer.Ordinal)
+                    .SequenceEqual(new[] { "a-survivor", "b-survivor" }), "concurrent append survives compaction");
+            }
+            finally
+            {
+                allowReplace.Set();
+                if (pruneTask is not null) pruneTask.Wait(TimeSpan.FromSeconds(10));
+                if (appendTask is not null) appendTask.Wait(TimeSpan.FromSeconds(10));
+            }
         }
         finally { Directory.Delete(root, true); }
     }

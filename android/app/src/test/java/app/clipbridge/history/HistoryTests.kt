@@ -7,6 +7,12 @@ import org.junit.Rule
 import org.junit.rules.TemporaryFolder
 import java.io.File
 import java.nio.charset.StandardCharsets
+import java.nio.file.Files
+import java.nio.file.StandardCopyOption
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.TimeoutException
 
 class HistoryTests {
     private val nowUtc = 1_800_000_000_000L
@@ -120,20 +126,47 @@ class HistoryTests {
         } catch (_: java.io.IOException) { }
         assertTrue(failing.getRecent(peerId, now).any { it.event.eventId == "will-expire" })
         assertTrue(HistoryStore(root).getRecent(peerId, now).any { it.event.eventId == "will-expire" })
+        assertTrue(File(root, "history").listFiles().orEmpty().none { it.name.startsWith("events-v1.jsonl.tmp.") })
     }
     @Test fun storeInstancesReloadBeforeCompaction() {
         val root = temporaryFolder.newFolder("history-instances")
         val now = System.currentTimeMillis()
-        val first = HistoryStore(root)
+        val replaceEntered = CountDownLatch(1)
+        val allowReplace = CountDownLatch(1)
+        val appendStarted = CountDownLatch(1)
+        val first = HistoryStore(root) { temporary, destination ->
+            replaceEntered.countDown()
+            if (!allowReplace.await(10, TimeUnit.SECONDS)) throw java.io.IOException("Test did not release compaction replace")
+            Files.move(temporary.toPath(), destination.toPath(), StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING)
+        }
         val second = HistoryStore(root)
         first.upsert(HistoryLocalRecord(event(eventId = "a-survivor", createdUtc = now)))
         first.upsert(HistoryLocalRecord(event(eventId = "expired", createdUtc = now - HistoryPolicy.SEVEN_DAYS_MILLIS - 1)))
-        second.upsert(HistoryLocalRecord(event(eventId = "b-survivor", createdUtc = now)))
+        val executor = Executors.newFixedThreadPool(2)
+        try {
+            val pruneTask = executor.submit { first.prune(now) }
+            assertTrue("compaction reached atomic replace pause", replaceEntered.await(5, TimeUnit.SECONDS))
+            val appendTask = executor.submit {
+                appendStarted.countDown()
+                second.upsert(HistoryLocalRecord(event(eventId = "b-survivor", createdUtc = now)))
+            }
+            assertTrue("concurrent append task started", appendStarted.await(5, TimeUnit.SECONDS))
+            // The bounded wait gives the signaled append thread time to contend for the shared path gate.
+            try {
+                appendTask.get(100, TimeUnit.MILLISECONDS)
+                fail("Append completed while compaction held the path gate")
+            } catch (_: TimeoutException) { }
 
-        first.prune(now)
-        assertEquals(setOf("a-survivor", "b-survivor"), HistoryStore(root).getRecent(peerId, now).map { it.event.eventId }.toSet())
+            allowReplace.countDown()
+            pruneTask.get(10, TimeUnit.SECONDS)
+            appendTask.get(10, TimeUnit.SECONDS)
+            assertEquals(setOf("a-survivor", "b-survivor"), HistoryStore(root).getRecent(peerId, now).map { it.event.eventId }.toSet())
+        } finally {
+            allowReplace.countDown()
+            executor.shutdown()
+            assertTrue("background operations finish after replacement release", executor.awaitTermination(10, TimeUnit.SECONDS))
+        }
     }
-
     @Test fun storeReloadsPerPeerAndKeepsFilesWhenDeleting() {
         val root = temporaryFolder.newFolder("history-reload")
         val logPath = File(root, "history/events-v1.jsonl")

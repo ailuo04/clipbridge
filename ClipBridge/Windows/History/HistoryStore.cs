@@ -299,16 +299,23 @@ internal sealed class HistoryStore
         string? directory = Path.GetDirectoryName(_logPath);
         if (!string.IsNullOrEmpty(directory)) Directory.CreateDirectory(directory);
         string temporaryPath = _logPath + ".tmp." + Guid.NewGuid().ToString("N");
-        using (var stream = new FileStream(temporaryPath, FileMode.CreateNew, FileAccess.Write, FileShare.None))
+        try
         {
-            foreach (HistoryLocalRecord entry in retainedEvents.Values.OrderBy(item => item.Event.PeerId, StringComparer.Ordinal).ThenBy(item => item.Event.EventId, StringComparer.Ordinal))
-                WriteLine(stream, CreateUpsertOperation(entry));
-            foreach (HistoryTombstone tombstone in retainedTombstones.Values.OrderBy(item => item.PeerId, StringComparer.Ordinal).ThenBy(item => item.EventId, StringComparer.Ordinal))
-                WriteLine(stream, CreateTombstoneOperation(tombstone));
-            stream.Flush(true);
-        }
+            using (var stream = new FileStream(temporaryPath, FileMode.CreateNew, FileAccess.Write, FileShare.None))
+            {
+                foreach (HistoryLocalRecord entry in retainedEvents.Values.OrderBy(item => item.Event.PeerId, StringComparer.Ordinal).ThenBy(item => item.Event.EventId, StringComparer.Ordinal))
+                    WriteLine(stream, CreateUpsertOperation(entry));
+                foreach (HistoryTombstone tombstone in retainedTombstones.Values.OrderBy(item => item.PeerId, StringComparer.Ordinal).ThenBy(item => item.EventId, StringComparer.Ordinal))
+                    WriteLine(stream, CreateTombstoneOperation(tombstone));
+                stream.Flush(true);
+            }
 
-        _replaceAtomically(temporaryPath, _logPath);
+            _replaceAtomically(temporaryPath, _logPath);
+        }
+        finally
+        {
+            if (File.Exists(temporaryPath)) File.Delete(temporaryPath);
+        }
     }
 
     private static void ReplaceAtomically(string temporaryPath, string destinationPath)
