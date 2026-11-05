@@ -65,6 +65,7 @@ internal static class HistoryTests
         StoreReplayRejectsConflictingEventPayload();
         StoreReplaySkipsInteriorConflictsWithoutChangingTheOriginal();
         ClipboardReadMatcherRecognizesReadApis();
+        ClipboardPreviewMethodParserHandlesNestedBraces();
         HistoryAndBackgroundTransportAvoidClipboardReads();
         Console.WriteLine("HISTORY TESTS PASSED");
     }
@@ -118,7 +119,103 @@ internal static class HistoryTests
                 "history/background path does not read clipboard: " + Path.GetRelativePath(repositoryRoot, path));
         }
 
-        // TrayAppContext is intentionally excluded: its clipboard read is only in the explicit PreviewClipboardAsync user action.
+        string trayPath = Path.Combine(repositoryRoot, "ClipBridge", "Windows", "TrayAppContext.cs");
+        string traySource = File.ReadAllText(trayPath);
+        MethodBodyBounds? previewBounds = FindMethodBodyBounds(traySource, "private async Task PreviewClipboardAsync()");
+        Program.Check(previewBounds.HasValue, "bounded parser locates PreviewClipboardAsync");
+        MethodBodyBounds bounds = previewBounds.GetValueOrDefault();
+        string previewBody = traySource[(bounds.OpeningBrace + 1)..bounds.ClosingBrace];
+        Program.Check(ContainsClipboardReadApi(previewBody), "clipboard reads remain inside explicit PreviewClipboardAsync");
+        string trayOutsidePreview = traySource.Remove(bounds.OpeningBrace, bounds.ClosingBrace - bounds.OpeningBrace + 1);
+        Program.Check(!ContainsClipboardReadApi(trayOutsidePreview), "TrayAppContext has no clipboard reads outside PreviewClipboardAsync");
+    }
+
+    private static void ClipboardPreviewMethodParserHandlesNestedBraces()
+    {
+        const string sample = """
+            class Sample {
+                private async Task PreviewClipboardAsync() {
+                    var marker = "}";
+                    // }
+                    if (true) { /* } */ }
+                }
+                private void Next() { }
+            }
+            """;
+        MethodBodyBounds? bounds = FindMethodBodyBounds(sample, "private async Task PreviewClipboardAsync()");
+        Program.Check(bounds.HasValue, "bounded method parser finds PreviewClipboardAsync body");
+        MethodBodyBounds body = bounds.GetValueOrDefault();
+        string extracted = sample[(body.OpeningBrace + 1)..body.ClosingBrace];
+        Program.Check(extracted.Contains("if (true)", StringComparison.Ordinal),
+            "bounded method parser balances nested braces and ignores braces in strings and comments");
+    }
+
+    private readonly record struct MethodBodyBounds(int OpeningBrace, int ClosingBrace);
+
+    private static MethodBodyBounds? FindMethodBodyBounds(string source, string signature)
+    {
+        int signatureStart = source.IndexOf(signature, StringComparison.Ordinal);
+        if (signatureStart < 0) return null;
+        int openingBrace = signatureStart + signature.Length;
+        while (openingBrace < source.Length && char.IsWhiteSpace(source[openingBrace])) openingBrace++;
+        if (openingBrace >= source.Length || source[openingBrace] != '{') return null;
+
+        int depth = 0;
+        bool inString = false, verbatimString = false, inCharacter = false;
+        bool lineComment = false, blockComment = false, escaped = false;
+        for (int index = openingBrace; index < source.Length; index++)
+        {
+            char current = source[index];
+            char next = index + 1 < source.Length ? source[index + 1] : (char)0;
+
+            if (lineComment)
+            {
+                if (current == 13 || current == 10) lineComment = false;
+                continue;
+            }
+            if (blockComment)
+            {
+                if (current == '*' && next == '/') { blockComment = false; index++; }
+                continue;
+            }
+            if (inString)
+            {
+                if (verbatimString && current == '"')
+                {
+                    if (next == '"') index++;
+                    else { inString = false; verbatimString = false; }
+                }
+                else if (!verbatimString && escaped) escaped = false;
+                else if (!verbatimString && current == (char)92) escaped = true;
+                else if (!verbatimString && current == '"') inString = false;
+                continue;
+            }
+            if (inCharacter)
+            {
+                if (escaped) escaped = false;
+                else if (current == (char)92) escaped = true;
+                else if (current == (char)39) inCharacter = false;
+                continue;
+            }
+            if (current == '/' && next == '/') { lineComment = true; index++; continue; }
+            if (current == '/' && next == '*') { blockComment = true; index++; continue; }
+            if (current == '"')
+            {
+                inString = true;
+                verbatimString = (index > 0 && source[index - 1] == '@') || (index > 1 && source[index - 1] == (char)36 && source[index - 2] == '@');
+                continue;
+            }
+            if (current == (char)39) { inCharacter = true; continue; }
+            if (current == '{') depth++;
+            else if (current == '}')
+            {
+                depth--;
+                if (depth == 0) return new MethodBodyBounds(openingBrace, index);
+                if (depth < 0) return null;
+            }
+        }
+
+        return null;
     }
 
     private static bool ContainsClipboardReadApi(string source) =>
