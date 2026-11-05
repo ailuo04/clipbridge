@@ -11,6 +11,7 @@ import java.nio.charset.StandardCharsets
 import java.nio.file.Files
 import java.nio.file.StandardCopyOption
 import java.util.UUID
+import java.util.concurrent.ConcurrentHashMap
 
 /** Syncable snapshot intentionally contains events and tombstones only, never local file references. */
 data class HistoryStoreSnapshot(
@@ -19,32 +20,38 @@ data class HistoryStoreSnapshot(
 )
 
 /** Per-peer JSONL history log. History operations never modify referenced local files. */
-class HistoryStore(filesDir: File) {
+class HistoryStore(filesDir: File, replaceFile: ((File, File) -> Unit)? = null) {
     private data class Key(val peerId: String, val eventId: String)
 
-    private val lock = Any()
-    private val logFile = File(File(filesDir, "history"), "events-v1.jsonl")
-    private val events = LinkedHashMap<Key, HistoryLocalRecord>()
+    private val logFile = File(File(filesDir, "history"), "events-v1.jsonl").canonicalFile
+    private val pathGate = PATH_GATES.computeIfAbsent(logFile.path) { Any() }
+    private val atomicReplace = replaceFile ?: { source: File, destination: File ->
+        Files.move(source.toPath(), destination.toPath(), StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING)
+    }
+    private var events = LinkedHashMap<Key, HistoryLocalRecord>()
     private val tombstones = LinkedHashMap<Key, HistoryTombstone>()
 
     init {
-        load()
+        reloadFromDisk()
     }
 
-    fun upsert(entry: HistoryLocalRecord) = synchronized(lock) {
+    fun upsert(entry: HistoryLocalRecord) = synchronized(pathGate) {
+        reloadFromDisk()
         HistoryPolicy.validateEvent(entry.event, entry.event.peerId, System.currentTimeMillis())
         val key = Key(entry.event.peerId, entry.event.eventId)
-        if (tombstones.containsKey(key)) return@synchronized
         val incoming = copyRecord(entry)
         val current = events[key]
-        if (current != null && current.event == incoming.event && current.localFileReferences == incoming.localFileReferences) return@synchronized
+        if (current != null && current.event != incoming.event) throw IllegalArgumentException("History event IDs are immutable; conflicting payload received")
+        if (tombstones.containsKey(key)) return@synchronized
+        if (current != null && current.localFileReferences == incoming.localFileReferences) return@synchronized
         val merged = mergeLocalReferences(current, incoming)
         append(operationForUpsert(merged))
         events[key] = merged
     }
 
     /** Returns visible records newest-first, with event ID as a deterministic tie-breaker. */
-    fun getRecent(peerId: String, nowUtc: Long): List<HistoryLocalRecord> = synchronized(lock) {
+    fun getRecent(peerId: String, nowUtc: Long): List<HistoryLocalRecord> = synchronized(pathGate) {
+        reloadFromDisk()
         require(peerId.isNotBlank()) { "History peer ID is required" }
         events.values
             .filter { it.event.peerId == peerId && HistoryPolicy.isVisible(it.event.createdUtc, nowUtc) }
@@ -52,7 +59,8 @@ class HistoryStore(filesDir: File) {
             .map(::copyRecord)
     }
 
-    fun deleteRecord(peerId: String, eventId: String, nowUtc: Long) = synchronized(lock) {
+    fun deleteRecord(peerId: String, eventId: String, nowUtc: Long) = synchronized(pathGate) {
+        reloadFromDisk()
         require(peerId.isNotBlank()) { "History peer ID is required" }
         require(eventId.isNotBlank()) { "History event ID is required" }
         val key = Key(peerId, eventId)
@@ -67,12 +75,24 @@ class HistoryStore(filesDir: File) {
         tombstones[key] = tombstone
     }
 
-    fun merge(peerId: String, entries: List<HistorySyncEvent>, tombstones: List<HistoryTombstone>, nowUtc: Long) = synchronized(lock) {
+    fun merge(peerId: String, entries: List<HistorySyncEvent>, tombstones: List<HistoryTombstone>, nowUtc: Long) = synchronized(pathGate) {
+        reloadFromDisk()
         require(peerId.isNotBlank()) { "History peer ID is required" }
-        tombstones.forEach { HistoryPolicy.validateTombstone(it, peerId) }
-        entries.forEach { HistoryPolicy.validateEvent(it, peerId, nowUtc) }
-        tombstones.forEach(::mergeTombstone)
-        entries.forEach { entry ->
+        val incomingEntries = entries.toList()
+        val incomingTombstones = tombstones.toList()
+        incomingTombstones.forEach { HistoryPolicy.validateTombstone(it, peerId) }
+        incomingEntries.forEach { HistoryPolicy.validateEvent(it, peerId, nowUtc) }
+        val batchById = LinkedHashMap<Key, HistorySyncEvent>()
+        incomingEntries.forEach { entry ->
+            val key = Key(entry.peerId, entry.eventId)
+            val stored = events[key]?.event
+            require(stored == null || stored == entry) { "History event IDs are immutable; conflicting payload received" }
+            val prior = batchById[key]
+            require(prior == null || prior == entry) { "History event IDs are immutable; conflicting payloads in merge batch" }
+            batchById[key] = entry
+        }
+        incomingTombstones.forEach(::mergeTombstone)
+        incomingEntries.forEach { entry ->
             val key = Key(entry.peerId, entry.eventId)
             if (tombstonesById(key)) return@forEach
             val current = events[key]
@@ -83,7 +103,8 @@ class HistoryStore(filesDir: File) {
         }
     }
 
-    fun getSyncSnapshot(peerId: String, nowUtc: Long): HistoryStoreSnapshot = synchronized(lock) {
+    fun getSyncSnapshot(peerId: String, nowUtc: Long): HistoryStoreSnapshot = synchronized(pathGate) {
+        reloadFromDisk()
         require(peerId.isNotBlank()) { "History peer ID is required" }
         val entries = events.values
             .filter { it.event.peerId == peerId && HistoryPolicy.isVisible(it.event.createdUtc, nowUtc) }
@@ -95,17 +116,19 @@ class HistoryStore(filesDir: File) {
         HistoryStoreSnapshot(entries, peerTombstones)
     }
 
-    fun prune(nowUtc: Long) = synchronized(lock) {
-        val expired = events.keys.filter { key ->
-            val createdUtc = events.getValue(key).event.createdUtc
-            createdUtc <= nowUtc - HistoryPolicy.SEVEN_DAYS_MILLIS
+    fun prune(nowUtc: Long) = synchronized(pathGate) {
+        reloadFromDisk()
+        val retainedEvents = events.filterValues { record ->
+            record.event.createdUtc > nowUtc - HistoryPolicy.SEVEN_DAYS_MILLIS
         }
-        if (expired.isEmpty()) return@synchronized
-        expired.forEach(events::remove)
-        compact()
+        if (retainedEvents.size == events.size) return@synchronized
+        compact(retainedEvents, tombstones)
+        events = LinkedHashMap(retainedEvents)
     }
 
-    private fun load() = synchronized(lock) {
+    private fun reloadFromDisk() = synchronized(pathGate) {
+        events.clear()
+        tombstones.clear()
         if (!logFile.isFile) return@synchronized
         val bytes = logFile.readBytes()
         var start = 0
@@ -198,19 +221,19 @@ class HistoryStore(filesDir: File) {
         }
     }
 
-    private fun compact() {
+    private fun compact(retainedEvents: Map<Key, HistoryLocalRecord>, retainedTombstones: Map<Key, HistoryTombstone>) {
         logFile.parentFile?.mkdirs()
         val temporary = File(logFile.parentFile, "${logFile.name}.tmp.${UUID.randomUUID()}")
         FileOutputStream(temporary, false).use { stream ->
-            events.values
+            retainedEvents.values
                 .sortedWith(compareBy<HistoryLocalRecord> { it.event.peerId }.thenBy { it.event.eventId })
                 .forEach { stream.write((operationForUpsert(it).toString() + "\n").toByteArray(StandardCharsets.UTF_8)) }
-            tombstones.values
+            retainedTombstones.values
                 .sortedWith(compareBy<HistoryTombstone> { it.peerId }.thenBy { it.eventId })
                 .forEach { stream.write((operationForTombstone(it).toString() + "\n").toByteArray(StandardCharsets.UTF_8)) }
             stream.fd.sync()
         }
-        Files.move(temporary.toPath(), logFile.toPath(), StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING)
+        atomicReplace(temporary, logFile)
     }
 
     private fun truncateLog(length: Int) {
@@ -293,6 +316,8 @@ class HistoryStore(filesDir: File) {
     private fun tombstonesById(key: Key) = tombstones.containsKey(key)
 
     private companion object {
+        // Coordinates instances in this process only; it is not a cross-process lock.
+        val PATH_GATES = ConcurrentHashMap<String, Any>()
         const val LOG_SCHEMA_VERSION = 1
         const val UPSERT_OPERATION = "upsert"
         const val TOMBSTONE_OPERATION = "tombstone"

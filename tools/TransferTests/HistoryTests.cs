@@ -16,8 +16,12 @@ internal static class HistoryTests
         SyncContractUsesStableJsonNamesAndExcludesLocalPaths();
         PageEnvelopeValidationRejectsInvalidFields();
         UpsertTreatsEquivalentFileArraysAsSameEvent();
+        MergeRejectsConflictingEventIdsAtomically();
+        FailedCompactionPreservesMemoryAndDurableState();
+        StoreInstancesReloadBeforeCompaction();
         StoreReloadsPerPeerAndKeepsFilesWhenDeleting();
         StorePrunesExpiredRecordsAndRecoversTruncatedTail();
+        StoreRecoversNoncanonicalTrailingJsonLine();
         Console.WriteLine("HISTORY TESTS PASSED");
     }
 
@@ -88,6 +92,89 @@ internal static class HistoryTests
             store.Upsert(new HistoryLocalRecord(equivalent, new Dictionary<string, string>()));
 
             Program.Check(File.ReadAllLines(logPath).Length == 1, "structurally identical event upsert does not append a duplicate operation");
+        }
+        finally { Directory.Delete(root, true); }
+    }
+    private static void MergeRejectsConflictingEventIdsAtomically()
+    {
+        long now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        for (int order = 0; order < 2; order++)
+        {
+            string root = Path.Combine(Path.GetTempPath(), "clipbridge-history-conflict-order-" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(root);
+            try
+            {
+                string logPath = Path.Combine(root, "history", "events-v1.jsonl");
+                var store = new HistoryStore(logPath);
+                HistorySyncEvent existing = Event(eventId: "existing", createdUtc: now);
+                store.Upsert(new HistoryLocalRecord(existing, new Dictionary<string, string>()));
+                HistorySyncEvent first = Event(eventId: "duplicate", createdUtc: now, text: "first payload");
+                HistorySyncEvent second = Event(eventId: "duplicate", createdUtc: now, text: "second payload");
+                HistorySyncEvent[] batch = order == 0 ? new[] { first, second } : new[] { second, first };
+
+                Program.Rejects<InvalidDataException>(() => store.Merge(PeerId, batch, new[] { new HistoryTombstone("existing", PeerId, now) }, now), "conflicting event batch rejected regardless of input order");
+                Program.Check(store.GetRecent(PeerId, now).Select(item => item.Event.EventId).SequenceEqual(new[] { "existing" }), "rejected batch leaves existing entries unchanged");
+                Program.Check(store.GetSyncSnapshot(PeerId, now).Tombstones.Count == 0, "rejected batch does not partially apply tombstones");
+            }
+            finally { Directory.Delete(root, true); }
+        }
+
+        string existingRoot = Path.Combine(Path.GetTempPath(), "clipbridge-history-conflict-existing-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(existingRoot);
+        try
+        {
+            string logPath = Path.Combine(existingRoot, "history", "events-v1.jsonl");
+            var store = new HistoryStore(logPath);
+            HistorySyncEvent original = Event(eventId: "stored", createdUtc: now, text: "original payload");
+            store.Upsert(new HistoryLocalRecord(original, new Dictionary<string, string>()));
+            HistorySyncEvent conflicting = Event(eventId: "stored", createdUtc: now, text: "changed payload");
+            Program.Rejects<InvalidDataException>(() => store.Merge(PeerId,
+                new[] { Event(eventId: "must-not-append", createdUtc: now), conflicting },
+                new[] { new HistoryTombstone("stored", PeerId, now) }, now), "merge rejects conflict with a stored event before applying any operations");
+            Program.Check(store.GetRecent(PeerId, now).Select(item => item.Event.EventId).SequenceEqual(new[] { "stored" }) && store.GetRecent(PeerId, now).Single().Event.Text == "original payload", "stored event and batch state remain unchanged after conflict rejection");
+            Program.Check(store.GetSyncSnapshot(PeerId, now).Tombstones.Count == 0, "stored conflict rejection leaves tombstones unchanged");
+
+            Program.Rejects<InvalidDataException>(() => store.Upsert(new HistoryLocalRecord(conflicting, new Dictionary<string, string>())), "local upsert rejects a conflicting payload for an immutable event ID");
+            Program.Check(store.GetRecent(PeerId, now).Single().Event.Text == "original payload", "conflicting upsert preserves the original event payload");
+        }
+        finally { Directory.Delete(existingRoot, true); }
+    }
+    private static void FailedCompactionPreservesMemoryAndDurableState()
+    {
+        string root = Path.Combine(Path.GetTempPath(), "clipbridge-history-failed-prune-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        try
+        {
+            string logPath = Path.Combine(root, "history", "events-v1.jsonl");
+            long now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+            var normal = new HistoryStore(logPath);
+            normal.Upsert(new HistoryLocalRecord(Event(eventId: "will-expire", createdUtc: now), new Dictionary<string, string>()));
+            var failing = new HistoryStore(logPath, (_, _) => throw new IOException("injected atomic replace failure"));
+
+            Program.Rejects<IOException>(() => failing.Prune(now + HistoryPolicy.SevenDaysMilliseconds + 1), "failed compaction reports atomic replace failure");
+            Program.Check(failing.GetRecent(PeerId, now).Any(item => item.Event.EventId == "will-expire"), "failed compaction leaves the pre-prune in-memory record visible");
+            Program.Check(new HistoryStore(logPath).GetRecent(PeerId, now).Any(item => item.Event.EventId == "will-expire"), "failed compaction leaves durable log unchanged");
+        }
+        finally { Directory.Delete(root, true); }
+    }
+    private static void StoreInstancesReloadBeforeCompaction()
+    {
+        string root = Path.Combine(Path.GetTempPath(), "clipbridge-history-instances-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        try
+        {
+            string logPath = Path.Combine(root, "history", "events-v1.jsonl");
+            long now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+            var first = new HistoryStore(logPath);
+            var second = new HistoryStore(logPath);
+            first.Upsert(new HistoryLocalRecord(Event(eventId: "a-survivor", createdUtc: now), new Dictionary<string, string>()));
+            first.Upsert(new HistoryLocalRecord(Event(eventId: "expired", createdUtc: now - HistoryPolicy.SevenDaysMilliseconds - 1), new Dictionary<string, string>()));
+            second.Upsert(new HistoryLocalRecord(Event(eventId: "b-survivor", createdUtc: now), new Dictionary<string, string>()));
+
+            first.Prune(now);
+            var reopened = new HistoryStore(logPath);
+            Program.Check(reopened.GetRecent(PeerId, now).Select(item => item.Event.EventId).OrderBy(id => id, StringComparer.Ordinal)
+                .SequenceEqual(new[] { "a-survivor", "b-survivor" }), "compaction from one instance preserves entries appended by another instance");
         }
         finally { Directory.Delete(root, true); }
     }
@@ -171,6 +258,25 @@ internal static class HistoryTests
             Program.Check(File.ReadAllBytes(logPath).SequenceEqual(validLog), "truncated final JSONL line is repaired without losing valid history");
             recovered.Upsert(new HistoryLocalRecord(Event(eventId: "after-recovery", createdUtc: now), new Dictionary<string, string>()));
             Program.Check(new HistoryStore(logPath).GetRecent(PeerId, now).Count == 2, "store remains writable after repairing truncated tail");
+        }
+        finally { Directory.Delete(root, true); }
+    }
+    private static void StoreRecoversNoncanonicalTrailingJsonLine()
+    {
+        string root = Path.Combine(Path.GetTempPath(), "clipbridge-history-case-recovery-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        try
+        {
+            string logPath = Path.Combine(root, "history", "events-v1.jsonl");
+            long now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+            new HistoryStore(logPath).Upsert(new HistoryLocalRecord(Event(eventId: "canonical", createdUtc: now), new Dictionary<string, string>()));
+            byte[] canonicalBytes = File.ReadAllBytes(logPath);
+            string noncanonicalLine = Encoding.UTF8.GetString(canonicalBytes).TrimEnd('\n').Replace("\"schemaVersion\"", "\"SchemaVersion\"", StringComparison.Ordinal);
+            File.AppendAllText(logPath, noncanonicalLine, Encoding.UTF8);
+
+            var recovered = new HistoryStore(logPath);
+            Program.Check(File.ReadAllBytes(logPath).SequenceEqual(canonicalBytes), "noncanonical trailing JSON casing is recovered and truncated");
+            Program.Check(recovered.GetRecent(PeerId, now).Single().Event.EventId == "canonical", "canonical record remains after noncanonical tail recovery");
         }
         finally { Directory.Delete(root, true); }
     }

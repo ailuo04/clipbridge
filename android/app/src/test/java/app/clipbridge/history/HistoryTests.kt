@@ -76,6 +76,64 @@ class HistoryTests {
         val page = HistorySyncPage(1, "request-1", peerId, 0, emptyList(), null)
         invalid { HistoryPolicy.validatePageEnvelope(page, peerId) }
     }
+    @Test fun mergeRejectsConflictingEventIdsAtomically() {
+        val now = System.currentTimeMillis()
+        repeat(2) { order ->
+            val root = temporaryFolder.newFolder("history-conflict-order-$order")
+            val store = HistoryStore(root)
+            val existing = event(eventId = "existing", createdUtc = now)
+            store.upsert(HistoryLocalRecord(existing))
+            val first = event(eventId = "duplicate", createdUtc = now, text = "first payload")
+            val second = event(eventId = "duplicate", createdUtc = now, text = "second payload")
+            val batch = if (order == 0) listOf(first, second) else listOf(second, first)
+
+            invalid { store.merge(peerId, batch, listOf(HistoryTombstone("existing", peerId, now)), now) }
+            assertEquals(listOf("existing"), store.getRecent(peerId, now).map { it.event.eventId })
+            assertTrue(store.getSyncSnapshot(peerId, now).tombstones.isEmpty())
+        }
+
+        val root = temporaryFolder.newFolder("history-conflict-stored")
+        val store = HistoryStore(root)
+        val original = event(eventId = "stored", createdUtc = now, text = "original payload")
+        store.upsert(HistoryLocalRecord(original))
+        val conflicting = event(eventId = "stored", createdUtc = now, text = "changed payload")
+        invalid {
+            store.merge(peerId, listOf(event(eventId = "must-not-append", createdUtc = now), conflicting),
+                listOf(HistoryTombstone("stored", peerId, now)), now)
+        }
+        assertEquals(listOf("stored"), store.getRecent(peerId, now).map { it.event.eventId })
+        assertEquals("original payload", store.getRecent(peerId, now).single().event.text)
+        assertTrue(store.getSyncSnapshot(peerId, now).tombstones.isEmpty())
+
+        invalid { store.upsert(HistoryLocalRecord(conflicting)) }
+        assertEquals("original payload", store.getRecent(peerId, now).single().event.text)
+    }
+    @Test fun failedCompactionPreservesMemoryAndDurableState() {
+        val root = temporaryFolder.newFolder("history-failed-prune")
+        val now = System.currentTimeMillis()
+        HistoryStore(root).upsert(HistoryLocalRecord(event(eventId = "will-expire", createdUtc = now)))
+        val failing = HistoryStore(root) { _, _ -> throw java.io.IOException("injected atomic replace failure") }
+
+        try {
+            failing.prune(now + HistoryPolicy.SEVEN_DAYS_MILLIS + 1)
+            fail("Expected injected atomic replace failure")
+        } catch (_: java.io.IOException) { }
+        assertTrue(failing.getRecent(peerId, now).any { it.event.eventId == "will-expire" })
+        assertTrue(HistoryStore(root).getRecent(peerId, now).any { it.event.eventId == "will-expire" })
+    }
+    @Test fun storeInstancesReloadBeforeCompaction() {
+        val root = temporaryFolder.newFolder("history-instances")
+        val now = System.currentTimeMillis()
+        val first = HistoryStore(root)
+        val second = HistoryStore(root)
+        first.upsert(HistoryLocalRecord(event(eventId = "a-survivor", createdUtc = now)))
+        first.upsert(HistoryLocalRecord(event(eventId = "expired", createdUtc = now - HistoryPolicy.SEVEN_DAYS_MILLIS - 1)))
+        second.upsert(HistoryLocalRecord(event(eventId = "b-survivor", createdUtc = now)))
+
+        first.prune(now)
+        assertEquals(setOf("a-survivor", "b-survivor"), HistoryStore(root).getRecent(peerId, now).map { it.event.eventId }.toSet())
+    }
+
     @Test fun storeReloadsPerPeerAndKeepsFilesWhenDeleting() {
         val root = temporaryFolder.newFolder("history-reload")
         val logPath = File(root, "history/events-v1.jsonl")
@@ -123,6 +181,18 @@ class HistoryTests {
         assertTrue(HistoryStore(root).getRecent(peerId, now).isEmpty())
     }
 
+    @Test fun storeRecoversNoncanonicalTrailingJsonLine() {
+        val root = temporaryFolder.newFolder("history-case-recovery")
+        val now = System.currentTimeMillis()
+        val logFile = File(File(root, "history"), "events-v1.jsonl")
+        HistoryStore(root).upsert(HistoryLocalRecord(event(eventId = "canonical", createdUtc = now)))
+        val canonicalBytes = logFile.readBytes()
+        val noncanonicalLine = canonicalBytes.toString(StandardCharsets.UTF_8).trimEnd('\n').replace("\"schemaVersion\"", "\"SchemaVersion\"")
+        logFile.appendText(noncanonicalLine, StandardCharsets.UTF_8)
+
+        assertEquals("canonical", HistoryStore(root).getRecent(peerId, now).single().event.eventId)
+        assertArrayEquals(canonicalBytes, logFile.readBytes())
+    }
     @Test fun storePrunesExpiredRecordsAndRecoversTruncatedTail() {
         val root = temporaryFolder.newFolder("history-prune")
         val logPath = File(root, "history/events-v1.jsonl")

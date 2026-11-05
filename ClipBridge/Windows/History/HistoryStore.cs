@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
@@ -15,34 +16,43 @@ internal sealed class HistoryStore
     private const string TombstoneOperation = "tombstone";
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
-        PropertyNameCaseInsensitive = true,
+        PropertyNameCaseInsensitive = false,
         WriteIndented = false
     };
     private static readonly UTF8Encoding StrictUtf8 = new(false, true);
+    // Coordinates instances in this process only; it is not a cross-process lock.
+    private static readonly ConcurrentDictionary<string, object> PathGates = new(OperatingSystem.IsWindows() ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal);
 
-    private readonly object _gate = new();
     private readonly string _logPath;
-    private readonly Dictionary<(string PeerId, string EventId), HistoryLocalRecord> _events = new();
+    private readonly object _pathGate;
+    private readonly Action<string, string> _replaceAtomically;
+    private Dictionary<(string PeerId, string EventId), HistoryLocalRecord> _events = new();
     private readonly Dictionary<(string PeerId, string EventId), HistoryTombstone> _tombstones = new();
 
-    public HistoryStore(string? logPath = null)
+    public HistoryStore(string? logPath = null, Action<string, string>? replaceAtomically = null)
     {
         _logPath = string.IsNullOrWhiteSpace(logPath)
             ? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "ClipBridge", "history", "events-v1.jsonl")
             : Path.GetFullPath(logPath);
-        Load();
+        _pathGate = PathGates.GetOrAdd(_logPath, static _ => new object());
+        _replaceAtomically = replaceAtomically ?? ReplaceAtomically;
+        lock (_pathGate) ReloadFromDisk();
     }
 
     public void Upsert(HistoryLocalRecord entry)
     {
         ArgumentNullException.ThrowIfNull(entry);
         HistoryLocalRecord incoming = CopyRecord(entry);
-        lock (_gate)
+        lock (_pathGate)
         {
+            ReloadFromDisk();
             HistoryPolicy.ValidateEvent(incoming.Event, incoming.Event.PeerId, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
             var key = (incoming.Event.PeerId, incoming.Event.EventId);
+            _events.TryGetValue(key, out HistoryLocalRecord? current);
+            if (current is not null && !EventsEqual(current.Event, incoming.Event))
+                throw new InvalidDataException("History event IDs are immutable; conflicting payload received.");
             if (_tombstones.ContainsKey(key)) return;
-            if (_events.TryGetValue(key, out HistoryLocalRecord? current) &&
+            if (current is not null &&
                 EventsEqual(current.Event, incoming.Event) &&
                 current.LocalFileReferences.Count == incoming.LocalFileReferences.Count &&
                 current.LocalFileReferences.All(pair => incoming.LocalFileReferences.TryGetValue(pair.Key, out string? value) && value == pair.Value))
@@ -58,13 +68,15 @@ internal sealed class HistoryStore
     public IReadOnlyList<HistoryLocalRecord> GetRecent(string peerId, long nowUtc)
     {
         RequirePeerId(peerId);
-        lock (_gate)
+        lock (_pathGate)
         {
+            ReloadFromDisk();
             return _events.Values
                 .Where(record => record.Event.PeerId == peerId && HistoryPolicy.IsVisible(record.Event.CreatedUtc, nowUtc))
                 .OrderByDescending(record => record.Event.CreatedUtc)
                 .ThenBy(record => record.Event.EventId, StringComparer.Ordinal)
-                .Select(CopyRecord)                .ToArray();
+                .Select(CopyRecord)
+                .ToArray();
         }
     }
 
@@ -72,8 +84,9 @@ internal sealed class HistoryStore
     {
         RequirePeerId(peerId);
         RequireEventId(eventId);
-        lock (_gate)
+        lock (_pathGate)
         {
+            ReloadFromDisk();
             var tombstone = new HistoryTombstone(eventId, peerId, nowUtc);
             var key = (peerId, eventId);
             if (_tombstones.TryGetValue(key, out HistoryTombstone? current) && current.DeletedUtc >= nowUtc)
@@ -93,14 +106,26 @@ internal sealed class HistoryStore
         RequirePeerId(peerId);
         ArgumentNullException.ThrowIfNull(entries);
         ArgumentNullException.ThrowIfNull(tombstones);
-        lock (_gate)
+        lock (_pathGate)
         {
+            ReloadFromDisk();
             HistoryTombstone[] incomingTombstones = tombstones.ToArray();
             HistorySyncEvent[] incomingEntries = entries.ToArray();
             foreach (HistoryTombstone tombstone in incomingTombstones)
                 HistoryPolicy.ValidateTombstone(tombstone, peerId);
             foreach (HistorySyncEvent entry in incomingEntries)
                 HistoryPolicy.ValidateEvent(entry, peerId, nowUtc);
+
+            var batchById = new Dictionary<(string PeerId, string EventId), HistorySyncEvent>();
+            foreach (HistorySyncEvent entry in incomingEntries)
+            {
+                var key = (entry.PeerId, entry.EventId);
+                if (_events.TryGetValue(key, out HistoryLocalRecord? stored) && !EventsEqual(stored.Event, entry))
+                    throw new InvalidDataException("History event IDs are immutable; conflicting payload received.");
+                if (batchById.TryGetValue(key, out HistorySyncEvent? prior) && !EventsEqual(prior, entry))
+                    throw new InvalidDataException("History event IDs are immutable; conflicting payloads in merge batch.");
+                batchById[key] = entry;
+            }
 
             foreach (HistoryTombstone tombstone in incomingTombstones)
                 MergeTombstone(tombstone);
@@ -119,8 +144,9 @@ internal sealed class HistoryStore
     public HistoryStoreSnapshot GetSyncSnapshot(string peerId, long nowUtc)
     {
         RequirePeerId(peerId);
-        lock (_gate)
+        lock (_pathGate)
         {
+            ReloadFromDisk();
             IReadOnlyList<HistorySyncEvent> entries = _events.Values
                 .Where(record => record.Event.PeerId == peerId && HistoryPolicy.IsVisible(record.Event.CreatedUtc, nowUtc))
                 .Select(record => record.Event)
@@ -138,60 +164,58 @@ internal sealed class HistoryStore
 
     public void Prune(long nowUtc)
     {
-        lock (_gate)
+        lock (_pathGate)
         {
-            var expired = _events
-                .Where(pair => pair.Value.Event.CreatedUtc <= nowUtc - HistoryPolicy.SevenDaysMilliseconds)
-                .Select(pair => pair.Key)
-                .ToArray();
-            if (expired.Length == 0) return;
-            foreach (var key in expired) _events.Remove(key);
-            Compact();
+            ReloadFromDisk();
+            var retainedEvents = _events
+                .Where(pair => pair.Value.Event.CreatedUtc > nowUtc - HistoryPolicy.SevenDaysMilliseconds)
+                .ToDictionary(pair => pair.Key, pair => pair.Value);
+            if (retainedEvents.Count == _events.Count) return;
+            Compact(retainedEvents, _tombstones);
+            _events = retainedEvents;
         }
     }
 
-    private void Load()
+    private void ReloadFromDisk()
     {
-        lock (_gate)
+        _events.Clear();
+        _tombstones.Clear();
+        if (!File.Exists(_logPath)) return;
+        byte[] bytes = File.ReadAllBytes(_logPath);
+        int cursor = 0;
+        while (cursor < bytes.Length)
         {
-            if (!File.Exists(_logPath)) return;
-            byte[] bytes = File.ReadAllBytes(_logPath);
-            int cursor = 0;
-            while (cursor < bytes.Length)
+            int newline = Array.IndexOf(bytes, (byte)'\n', cursor);
+            bool hasNewline = newline >= 0;
+            int end = hasNewline ? newline : bytes.Length;
+            bool valid = false;
+            try
             {
-                int newline = Array.IndexOf(bytes, (byte)'\n', cursor);
-                bool hasNewline = newline >= 0;
-                int end = hasNewline ? newline : bytes.Length;
-                bool valid = false;
-                try
+                string line = StrictUtf8.GetString(bytes, cursor, end - cursor).TrimEnd('\r');
+                if (string.IsNullOrWhiteSpace(line)) throw new InvalidDataException("History log line is empty.");
+                HistoryOperation operation = JsonSerializer.Deserialize<HistoryOperation>(line, JsonOptions)
+                    ?? throw new InvalidDataException("History operation is required.");
+                ApplyLoadedOperation(operation);
+                valid = true;
+            }
+            catch (Exception exception) when (IsLogDataError(exception))
+            {
+                bool isTrailingLine = !hasNewline || newline == bytes.Length - 1;
+                if (isTrailingLine)
                 {
-                    string line = StrictUtf8.GetString(bytes, cursor, end - cursor).TrimEnd('\r');
-                    if (string.IsNullOrWhiteSpace(line)) throw new InvalidDataException("History log line is empty.");
-                    HistoryOperation operation = JsonSerializer.Deserialize<HistoryOperation>(line, JsonOptions)
-                        ?? throw new InvalidDataException("History operation is required.");
-                    ApplyLoadedOperation(operation);
-                    valid = true;
-                }
-                catch (Exception exception) when (IsLogDataError(exception))
-                {
-                    bool isTrailingLine = !hasNewline || newline == bytes.Length - 1;
-                    if (isTrailingLine)
-                    {
-                        TruncateLog(cursor);
-                        return;
-                    }
-                }
-
-                if (!hasNewline)
-                {
-                    if (valid) AppendLineTerminator();
+                    TruncateLog(cursor);
                     return;
                 }
-                cursor = newline + 1;
             }
+
+            if (!hasNewline)
+            {
+                if (valid) AppendLineTerminator();
+                return;
+            }
+            cursor = newline + 1;
         }
     }
-
     private static bool IsLogDataError(Exception exception) => exception is
         JsonException or InvalidDataException or ArgumentException or FormatException or InvalidOperationException or
         KeyNotFoundException or IndexOutOfRangeException or NullReferenceException or System.Text.DecoderFallbackException;
@@ -263,22 +287,27 @@ internal sealed class HistoryStore
         stream.Flush(true);
     }
 
-    private void Compact()
+    private void Compact(IReadOnlyDictionary<(string PeerId, string EventId), HistoryLocalRecord> retainedEvents, IReadOnlyDictionary<(string PeerId, string EventId), HistoryTombstone> retainedTombstones)
     {
         string? directory = Path.GetDirectoryName(_logPath);
         if (!string.IsNullOrEmpty(directory)) Directory.CreateDirectory(directory);
         string temporaryPath = _logPath + ".tmp." + Guid.NewGuid().ToString("N");
         using (var stream = new FileStream(temporaryPath, FileMode.CreateNew, FileAccess.Write, FileShare.None))
         {
-            foreach (HistoryLocalRecord entry in _events.Values.OrderBy(item => item.Event.PeerId, StringComparer.Ordinal).ThenBy(item => item.Event.EventId, StringComparer.Ordinal))
+            foreach (HistoryLocalRecord entry in retainedEvents.Values.OrderBy(item => item.Event.PeerId, StringComparer.Ordinal).ThenBy(item => item.Event.EventId, StringComparer.Ordinal))
                 WriteLine(stream, CreateUpsertOperation(entry));
-            foreach (HistoryTombstone tombstone in _tombstones.Values.OrderBy(item => item.PeerId, StringComparer.Ordinal).ThenBy(item => item.EventId, StringComparer.Ordinal))
+            foreach (HistoryTombstone tombstone in retainedTombstones.Values.OrderBy(item => item.PeerId, StringComparer.Ordinal).ThenBy(item => item.EventId, StringComparer.Ordinal))
                 WriteLine(stream, CreateTombstoneOperation(tombstone));
             stream.Flush(true);
         }
 
-        if (File.Exists(_logPath)) File.Replace(temporaryPath, _logPath, null);
-        else File.Move(temporaryPath, _logPath);
+        _replaceAtomically(temporaryPath, _logPath);
+    }
+
+    private static void ReplaceAtomically(string temporaryPath, string destinationPath)
+    {
+        if (File.Exists(destinationPath)) File.Replace(temporaryPath, destinationPath, null);
+        else File.Move(temporaryPath, destinationPath);
     }
 
     private static void WriteLine(FileStream stream, HistoryOperation operation)
@@ -304,6 +333,7 @@ internal sealed class HistoryStore
         left.Text == right.Text &&
         left.State == right.State &&
         left.Files.SequenceEqual(right.Files);
+
     private static HistoryLocalRecord MergeLocalReferences(HistoryLocalRecord? current, HistoryLocalRecord incoming)
     {
         if (current is null || current.LocalFileReferences.Count == 0) return CopyRecord(incoming);
