@@ -23,6 +23,7 @@ internal static class HistoryTests
         var now = DateTimeOffset.FromUnixTimeMilliseconds(FixedNowUtc).ToUnixTimeMilliseconds();
         var sixDaysTwentyThreeHoursFiftyNineMinutesAgo = now - TimeSpan.FromDays(6).Ticks / TimeSpan.TicksPerMillisecond - TimeSpan.FromHours(23).Ticks / TimeSpan.TicksPerMillisecond - TimeSpan.FromMinutes(59).Ticks / TimeSpan.TicksPerMillisecond;
         Program.Check(HistoryPolicy.IsVisible(sixDaysTwentyThreeHoursFiftyNineMinutesAgo, now), "six-day twenty-three-hour event visible");
+        Program.Check(HistoryPolicy.IsVisible(now - HistoryPolicy.SevenDaysMilliseconds + 1, now), "event one millisecond inside seven-day window visible");
         Program.Check(!HistoryPolicy.IsVisible(now - (long)TimeSpan.FromDays(7).TotalMilliseconds, now), "seven-day boundary expired");
         Program.Check(!HistoryPolicy.IsVisible(now + 1, now), "future event is not visible");
         RejectsInvalid(() => HistoryPolicy.ValidateEvent(Event(createdUtc: now + 1), PeerId, now), "future timestamp rejected");
