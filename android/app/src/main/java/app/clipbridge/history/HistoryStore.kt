@@ -191,7 +191,11 @@ class HistoryStore(filesDir: File, replaceFile: ((File, File) -> Unit)? = null) 
     private fun applyUpsert(entry: HistoryLocalRecord) {
         val key = Key(entry.event.peerId, entry.event.eventId)
         if (tombstones.containsKey(key)) return
-        events[key] = mergeLocalReferences(events[key], entry)
+        val current = events[key]
+        require(current == null || current.event == entry.event) {
+            "History event IDs are immutable; conflicting payload found in the log"
+        }
+        events[key] = mergeLocalReferences(current, entry)
     }
 
     private fun mergeTombstone(tombstone: HistoryTombstone) {

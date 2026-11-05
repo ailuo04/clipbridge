@@ -22,6 +22,7 @@ internal static class HistoryTests
         StoreReloadsPerPeerAndKeepsFilesWhenDeleting();
         StorePrunesExpiredRecordsAndRecoversTruncatedTail();
         StoreRecoversNoncanonicalTrailingJsonLine();
+        StoreReplayRejectsConflictingEventPayload();
         Console.WriteLine("HISTORY TESTS PASSED");
     }
 
@@ -277,6 +278,47 @@ internal static class HistoryTests
             var recovered = new HistoryStore(logPath);
             Program.Check(File.ReadAllBytes(logPath).SequenceEqual(canonicalBytes), "noncanonical trailing JSON casing is recovered and truncated");
             Program.Check(recovered.GetRecent(PeerId, now).Single().Event.EventId == "canonical", "canonical record remains after noncanonical tail recovery");
+        }
+        finally { Directory.Delete(root, true); }
+    }
+    private static void StoreReplayRejectsConflictingEventPayload()
+    {
+        string root = Path.Combine(Path.GetTempPath(), "clipbridge-history-replay-conflict-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        try
+        {
+            string logPath = Path.Combine(root, "history", "events-v1.jsonl");
+            long now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+            new HistoryStore(logPath).Upsert(new HistoryLocalRecord(Event(eventId: "immutable", createdUtc: now, text: "original"), new Dictionary<string, string>()));
+            byte[] validLog = File.ReadAllBytes(logPath);
+            string conflictingOperation = JsonSerializer.Serialize(new Dictionary<string, object?>
+            {
+                ["schemaVersion"] = 1,
+                ["operation"] = "upsert",
+                ["record"] = new Dictionary<string, object?>
+                {
+                    ["event"] = new Dictionary<string, object?>
+                    {
+                        ["schemaVersion"] = 1,
+                        ["eventId"] = "immutable",
+                        ["peerId"] = PeerId,
+                        ["senderDeviceId"] = "device-a",
+                        ["createdUtc"] = now,
+                        ["contentType"] = "text",
+                        ["text"] = "conflicting",
+                        ["files"] = Array.Empty<object>(),
+                        ["state"] = "sent"
+                    },
+                    ["localFileReferences"] = new Dictionary<string, string>()
+                },
+                ["tombstone"] = null
+            });
+            File.AppendAllText(logPath, conflictingOperation + "\n", Encoding.UTF8);
+
+            var reopened = new HistoryStore(logPath);
+            HistorySyncEvent recovered = reopened.GetRecent(PeerId, now).Single().Event;
+            Program.Check(recovered.Text == "original", "replay preserves original immutable event payload");
+            Program.Check(File.ReadAllBytes(logPath).SequenceEqual(validLog), "conflicting trailing upsert is rejected and truncated");
         }
         finally { Directory.Delete(root, true); }
     }

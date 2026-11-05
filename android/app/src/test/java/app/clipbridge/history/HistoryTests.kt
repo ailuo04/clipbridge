@@ -181,6 +181,19 @@ class HistoryTests {
         assertTrue(HistoryStore(root).getRecent(peerId, now).isEmpty())
     }
 
+    @Test fun storeReplayRejectsConflictingEventPayload() {
+        val root = temporaryFolder.newFolder("history-replay-conflict")
+        val now = System.currentTimeMillis()
+        val logFile = File(File(root, "history"), "events-v1.jsonl")
+        HistoryStore(root).upsert(HistoryLocalRecord(event(eventId = "immutable", createdUtc = now, text = "original")))
+        val validLog = logFile.readBytes()
+        val conflictingOperation = """{"schemaVersion":1,"operation":"upsert","record":{"event":{"schemaVersion":1,"eventId":"immutable","peerId":"peer-a","senderDeviceId":"device-a","createdUtc":$now,"contentType":"text","text":"conflicting","files":[],"state":"sent"},"localFileReferences":{}},"tombstone":null}"""
+        logFile.appendText("$conflictingOperation\n", StandardCharsets.UTF_8)
+
+        val reopened = HistoryStore(root)
+        assertEquals("original", reopened.getRecent(peerId, now).single().event.text)
+        assertArrayEquals(validLog, logFile.readBytes())
+    }
     @Test fun storeRecoversNoncanonicalTrailingJsonLine() {
         val root = temporaryFolder.newFolder("history-case-recovery")
         val now = System.currentTimeMillis()

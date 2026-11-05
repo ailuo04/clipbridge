@@ -249,7 +249,14 @@ internal sealed class HistoryStore
     {
         var key = (entry.Event.PeerId, entry.Event.EventId);
         if (_tombstones.ContainsKey(key)) return;
-        _events[key] = MergeLocalReferences(_events.GetValueOrDefault(key), entry);
+        if (_events.TryGetValue(key, out HistoryLocalRecord? current))
+        {
+            if (!EventsEqual(current.Event, entry.Event))
+                throw new InvalidDataException("History event IDs are immutable; conflicting payload found in the log.");
+            _events[key] = MergeLocalReferences(current, entry);
+            return;
+        }
+        _events.Add(key, CopyRecord(entry));
     }
 
     private void MergeTombstone(HistoryTombstone tombstone)
