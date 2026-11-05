@@ -20,11 +20,14 @@ data class HistoryStoreSnapshot(
 )
 
 /** Per-peer JSONL history log. History operations never modify referenced local files. */
-class HistoryStore(filesDir: File, replaceFile: ((File, File) -> Unit)? = null) {
+class HistoryStore(filesDir: File, tempFileFactory: (() -> File)? = null, replaceFile: ((File, File) -> Unit)? = null) {
     private data class Key(val peerId: String, val eventId: String)
 
     private val logFile = File(File(filesDir, "history"), "events-v1.jsonl").canonicalFile
     private val pathGate = PATH_GATES.computeIfAbsent(logFile.path) { Any() }
+    private val compactionTempFileFactory = tempFileFactory ?: {
+        File(logFile.parentFile, "${logFile.name}.tmp.${UUID.randomUUID()}")
+    }
     private val atomicReplace = replaceFile ?: { source: File, destination: File ->
         Files.move(source.toPath(), destination.toPath(), StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING)
     }
@@ -227,7 +230,7 @@ class HistoryStore(filesDir: File, replaceFile: ((File, File) -> Unit)? = null) 
 
     private fun compact(retainedEvents: Map<Key, HistoryLocalRecord>, retainedTombstones: Map<Key, HistoryTombstone>) {
         logFile.parentFile?.mkdirs()
-        val temporary = File(logFile.parentFile, "${logFile.name}.tmp.${UUID.randomUUID()}")
+        val temporary = createCompactionTempFile()
         try {
             FileOutputStream(temporary, false).use { stream ->
                 retainedEvents.values
@@ -244,6 +247,18 @@ class HistoryStore(filesDir: File, replaceFile: ((File, File) -> Unit)? = null) 
         }
     }
 
+    private fun createCompactionTempFile(): File {
+        val expectedParent = logFile.parentFile?.canonicalFile
+            ?: throw java.io.IOException("History log directory is unavailable")
+        while (true) {
+            val candidate = compactionTempFileFactory()
+            if (candidate.parentFile?.canonicalFile != expectedParent) {
+                throw java.io.IOException("Compaction temporary file must be a sibling of the history log")
+            }
+            // Exclusive creation establishes cleanup ownership; a collision is retried without touching that file.
+            if (candidate.createNewFile()) return candidate
+        }
+    }
     private fun truncateLog(length: Int) {
         RandomAccessFile(logFile, "rw").use { file ->
             file.setLength(length.toLong())

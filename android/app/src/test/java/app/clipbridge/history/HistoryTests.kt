@@ -128,6 +128,27 @@ class HistoryTests {
         assertTrue(HistoryStore(root).getRecent(peerId, now).any { it.event.eventId == "will-expire" })
         assertTrue(File(root, "history").listFiles().orEmpty().none { it.name.startsWith("events-v1.jsonl.tmp.") })
     }
+    @Test fun compactionTempCandidateCollisionPreservesPreexistingFile() {
+        val root = temporaryFolder.newFolder("history-temp-collision")
+        val historyDirectory = File(root, "history").apply { mkdirs() }
+        val preexisting = File(historyDirectory, "events-v1.jsonl.tmp.collision")
+        val sentinel = "leave this file untouched".toByteArray(StandardCharsets.UTF_8)
+        preexisting.writeBytes(sentinel)
+        val ownedCandidate = File(historyDirectory, "events-v1.jsonl.tmp.owned")
+        val candidates = listOf(preexisting, ownedCandidate)
+        var nextCandidate = 0
+        val now = System.currentTimeMillis()
+        val store = HistoryStore(root, tempFileFactory = { candidates[nextCandidate++] })
+        store.upsert(HistoryLocalRecord(event(eventId = "expired", createdUtc = now - HistoryPolicy.SEVEN_DAYS_MILLIS - 1)))
+        store.upsert(HistoryLocalRecord(event(eventId = "retained", createdUtc = now)))
+
+        store.prune(now)
+
+        assertEquals(2, nextCandidate)
+        assertArrayEquals(sentinel, preexisting.readBytes())
+        assertFalse("owned candidate was moved and cleaned up", ownedCandidate.exists())
+        assertEquals(listOf("retained"), store.getRecent(peerId, now).map { it.event.eventId })
+    }
     @Test fun storeInstancesReloadBeforeCompaction() {
         val root = temporaryFolder.newFolder("history-instances")
         val now = System.currentTimeMillis()
