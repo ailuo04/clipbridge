@@ -43,7 +43,7 @@ internal sealed class HistoryStore
             var key = (incoming.Event.PeerId, incoming.Event.EventId);
             if (_tombstones.ContainsKey(key)) return;
             if (_events.TryGetValue(key, out HistoryLocalRecord? current) &&
-                current.Event == incoming.Event &&
+                EventsEqual(current.Event, incoming.Event) &&
                 current.LocalFileReferences.Count == incoming.LocalFileReferences.Count &&
                 current.LocalFileReferences.All(pair => incoming.LocalFileReferences.TryGetValue(pair.Key, out string? value) && value == pair.Value))
                 return;
@@ -108,7 +108,7 @@ internal sealed class HistoryStore
             {
                 var key = (entry.PeerId, entry.EventId);
                 if (_tombstones.ContainsKey(key)) continue;
-                if (_events.TryGetValue(key, out HistoryLocalRecord? current) && current.Event == entry) continue;
+                if (_events.TryGetValue(key, out HistoryLocalRecord? current) && EventsEqual(current.Event, entry)) continue;
                 HistoryLocalRecord merged = MergeLocalReferences(current, new HistoryLocalRecord(entry, new Dictionary<string, string>()));
                 Append(CreateUpsertOperation(merged));
                 _events[key] = merged;
@@ -294,6 +294,16 @@ internal sealed class HistoryStore
         stream.Flush(true);
     }
 
+    private static bool EventsEqual(HistorySyncEvent left, HistorySyncEvent right) =>
+        left.SchemaVersion == right.SchemaVersion &&
+        left.EventId == right.EventId &&
+        left.PeerId == right.PeerId &&
+        left.SenderDeviceId == right.SenderDeviceId &&
+        left.CreatedUtc == right.CreatedUtc &&
+        left.ContentType == right.ContentType &&
+        left.Text == right.Text &&
+        left.State == right.State &&
+        left.Files.SequenceEqual(right.Files);
     private static HistoryLocalRecord MergeLocalReferences(HistoryLocalRecord? current, HistoryLocalRecord incoming)
     {
         if (current is null || current.LocalFileReferences.Count == 0) return CopyRecord(incoming);

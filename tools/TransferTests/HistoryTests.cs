@@ -15,6 +15,7 @@ internal static class HistoryTests
         RouteValidationBindsEventsToPeer();
         SyncContractUsesStableJsonNamesAndExcludesLocalPaths();
         PageEnvelopeValidationRejectsInvalidFields();
+        UpsertTreatsEquivalentFileArraysAsSameEvent();
         StoreReloadsPerPeerAndKeepsFilesWhenDeleting();
         StorePrunesExpiredRecordsAndRecoversTruncatedTail();
         Console.WriteLine("HISTORY TESTS PASSED");
@@ -63,6 +64,32 @@ internal static class HistoryTests
         RejectsInvalid(() => HistoryPolicy.ValidatePageEnvelope(missingEntries, PeerId), "missing page entries rejected");
         var missingTombstones = JsonSerializer.Deserialize<HistorySyncPage>("""{"schemaVersion":1,"requestId":"request-1","peerId":"peer-a","pageNumber":0,"entries":[]}""")!;
         RejectsInvalid(() => HistoryPolicy.ValidatePageEnvelope(missingTombstones, PeerId), "missing page tombstones rejected");
+    }
+    private static void UpsertTreatsEquivalentFileArraysAsSameEvent()
+    {
+        string root = Path.Combine(Path.GetTempPath(), "clipbridge-history-equality-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        try
+        {
+            string logPath = Path.Combine(root, "history", "events-v1.jsonl");
+            long now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+            HistorySyncEvent first = Event(
+                eventId: "same-event",
+                createdUtc: now,
+                files: new[] { new HistoryFileMetadata("report.txt", 12, new string('a', 64)) });
+            HistorySyncEvent equivalent = Event(
+                eventId: "same-event",
+                createdUtc: now,
+                files: new[] { new HistoryFileMetadata("report.txt", 12, new string('a', 64)) });
+            Program.Check(!ReferenceEquals(first.Files, equivalent.Files), "equivalent events use distinct file arrays");
+
+            var store = new HistoryStore(logPath);
+            store.Upsert(new HistoryLocalRecord(first, new Dictionary<string, string>()));
+            store.Upsert(new HistoryLocalRecord(equivalent, new Dictionary<string, string>()));
+
+            Program.Check(File.ReadAllLines(logPath).Length == 1, "structurally identical event upsert does not append a duplicate operation");
+        }
+        finally { Directory.Delete(root, true); }
     }
     private static void StoreReloadsPerPeerAndKeepsFilesWhenDeleting()
     {
