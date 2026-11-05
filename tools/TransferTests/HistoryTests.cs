@@ -14,6 +14,7 @@ internal static class HistoryTests
         ValidationRejectsInvalidEvents();
         RouteValidationBindsEventsToPeer();
         SyncContractUsesStableJsonNamesAndExcludesLocalPaths();
+        PageEnvelopeValidationRejectsInvalidFields();
         Console.WriteLine("HISTORY TESTS PASSED");
     }
 
@@ -46,6 +47,15 @@ internal static class HistoryTests
         RejectsInvalid(() => HistoryPolicy.ValidateTombstone(new HistoryTombstone("event-1", "peer-b", FixedNowUtc), PeerId), "tombstone for another authenticated peer rejected");
     }
 
+    private static void PageEnvelopeValidationRejectsInvalidFields()
+    {
+        var page = new HistorySyncPage(1, "request-1", PeerId, 0, new[] { Event() }, Array.Empty<HistoryTombstone>());
+        HistoryPolicy.ValidatePageEnvelope(page, PeerId);
+        Program.Check(true, "valid page envelope accepted");
+        RejectsInvalid(() => HistoryPolicy.ValidatePageEnvelope(page with { RequestId = "" }, PeerId), "empty page requestId rejected");
+        RejectsInvalid(() => HistoryPolicy.ValidatePageEnvelope(page with { SchemaVersion = 2 }, PeerId), "unsupported page schema rejected");
+        RejectsInvalid(() => HistoryPolicy.ValidatePageEnvelope(page with { PeerId = "peer-b" }, PeerId), "page for another authenticated peer rejected");
+    }
     private static void SyncContractUsesStableJsonNamesAndExcludesLocalPaths()
     {
         JsonElement entry = JsonSerializer.SerializeToElement(Event());

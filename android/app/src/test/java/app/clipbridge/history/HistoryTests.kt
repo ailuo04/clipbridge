@@ -43,6 +43,20 @@ class HistoryTests {
         assertEquals(1, page.schemaVersion)
     }
 
+    @Test fun pageEnvelopeRejectsEmptyRequestId() {
+        val page = HistorySyncPage(1, "", peerId, 0, listOf(event()), emptyList())
+        invalid { HistoryPolicy.validatePageEnvelope(page, peerId) }
+    }
+
+    @Test fun pageEnvelopeRejectsUnsupportedSchemaVersion() {
+        val page = HistorySyncPage(2, "request-1", peerId, 0, listOf(event()), emptyList())
+        invalid { HistoryPolicy.validatePageEnvelope(page, peerId) }
+    }
+
+    @Test fun pageEnvelopeRejectsPeerMismatchWithAuthenticatedRoute() {
+        val page = HistorySyncPage(1, "request-1", "peer-b", 0, listOf(event()), emptyList())
+        invalid { HistoryPolicy.validatePageEnvelope(page, peerId) }
+    }
     private fun event(
         schemaVersion: Int = 1,
         eventId: String = "event-1",

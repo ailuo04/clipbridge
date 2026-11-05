@@ -45,6 +45,15 @@ internal static class HistoryPolicy
         if (value.PeerId != authenticatedPeerId) throw new InvalidDataException("History tombstone peer does not match the authenticated route.");
     }
 
+    public static void ValidatePageEnvelope(HistorySyncPage value, string authenticatedPeerId)
+    {
+        if (value is null) throw new InvalidDataException("History sync page is required.");
+        if (value.SchemaVersion != SchemaVersion) throw new InvalidDataException("Unsupported history sync schema.");
+        RequireId(value.RequestId, "requestId");
+        RequireId(value.PeerId, "peerId");
+        RequireId(authenticatedPeerId, "authenticated peerId");
+        if (value.PeerId != authenticatedPeerId) throw new InvalidDataException("History page peer does not match the authenticated route.");
+    }
     private static void RequireId(string? value, string name)
     {
         if (string.IsNullOrWhiteSpace(value)) throw new InvalidDataException($"History {name} is required.");

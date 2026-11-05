@@ -34,6 +34,13 @@ object HistoryPolicy {
         require(value.peerId == authenticatedPeerId) { "History tombstone peer does not match the authenticated route" }
     }
 
+    fun validatePageEnvelope(value: HistorySyncPage, authenticatedPeerId: String) {
+        require(value.schemaVersion == SCHEMA_VERSION) { "Unsupported history sync schema" }
+        requireId(value.requestId, "requestId")
+        requireId(value.peerId, "peerId")
+        requireId(authenticatedPeerId, "authenticated peerId")
+        require(value.peerId == authenticatedPeerId) { "History page peer does not match the authenticated route" }
+    }
     private fun requireId(value: String, name: String) {
         require(value.isNotBlank()) { "History $name is required" }
     }
