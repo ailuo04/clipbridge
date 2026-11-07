@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.IO;
 using System.Net;
 using System.Net.Http;
@@ -26,7 +27,7 @@ internal static class UpdateProtocol
 
 	internal static async Task<AvailableUpdate?> CheckAsync(CancellationToken cancellationToken)
 	{
-		string text = Environment.GetEnvironmentVariable("CLIPBRIDGE_UPDATE_URL");
+		string? text = Environment.GetEnvironmentVariable("CLIPBRIDGE_UPDATE_URL");
 		if (string.IsNullOrWhiteSpace(text))
 		{
 			text = DefaultManifestUrl;
@@ -84,7 +85,7 @@ internal static class UpdateProtocol
 				return null;
 			}
 			string text = RequiredString(value, "version");
-			if (!Version.TryParse(text, out Version result))
+			if (!Version.TryParse(text, out Version? result))
 			{
 				throw new UpdateProtocolException("更新版本号格式无效");
 			}
@@ -121,15 +122,18 @@ internal static class UpdateProtocol
 		}
 	}
 
-	internal static async Task DownloadAsync(AvailableUpdate update, string destinationPath, CancellationToken cancellationToken)
+	internal static async Task DownloadAsync(AvailableUpdate update, string destinationPath, CancellationToken cancellationToken, IProgress<UpdateProgress>? progress = null)
 	{
 		EnsureTrustedUrl(update.DownloadUrl, "安装包地址");
-		Directory.CreateDirectory(Path.GetDirectoryName(destinationPath));
+		Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(destinationPath))!);
 		string temporaryPath = destinationPath + ".part";
+        progress?.Report(new UpdateProgress(UpdateStage.Downloading, 0, update.Size));
+        Stopwatch elapsed = Stopwatch.StartNew();
+        long lastReport = 0;
 		try
 		{
 			using HttpClient client = CreateHttpClient();
-			using HttpResponseMessage response = await client.GetAsync(update.DownloadUrl, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
+			using HttpResponseMessage response = await client.GetAsync(update.DownloadUrl, HttpCompletionOption.ResponseHeadersRead, cancellationToken).ConfigureAwait(false);
 			if (response.StatusCode != HttpStatusCode.OK)
 			{
 				throw new UpdateProtocolException("安装包下载失败：HTTP " + (int)response.StatusCode);
@@ -149,7 +153,7 @@ internal static class UpdateProtocol
 			byte[] buffer = new byte[81920];
 			long total = 0L;
 			int num;
-			while ((num = await input.ReadAsync(buffer.AsMemory(), cancellationToken)) > 0)
+			while ((num = await input.ReadAsync(buffer.AsMemory(), cancellationToken).ConfigureAwait(false)) > 0)
 			{
 				total += num;
 				if (total > update.Size)
@@ -157,19 +161,27 @@ internal static class UpdateProtocol
 					throw new UpdateProtocolException("安装包长度与更新清单不一致");
 				}
 				hash.AppendData(buffer, 0, num);
-				await output.WriteAsync(buffer.AsMemory(0, num), cancellationToken);
+				await output.WriteAsync(buffer.AsMemory(0, num), cancellationToken).ConfigureAwait(false);
+                if (elapsed.ElapsedMilliseconds - lastReport >= 100 || total == update.Size)
+                {
+                    progress?.Report(new UpdateProgress(UpdateStage.Downloading, total, update.Size, total / Math.Max(0.001, elapsed.Elapsed.TotalSeconds)));
+                    lastReport = elapsed.ElapsedMilliseconds;
+                }
 			}
 			if (total != update.Size)
 			{
 				throw new UpdateProtocolException("安装包长度与更新清单不一致");
 			}
-			string x = Convert.ToHexString(hash.GetHashAndReset());
+			cancellationToken.ThrowIfCancellationRequested();
+            progress?.Report(new UpdateProgress(UpdateStage.Verifying, 0, 1));
+            string x = Convert.ToHexString(hash.GetHashAndReset());
 			if (!StringComparer.OrdinalIgnoreCase.Equals(x, update.Sha256))
 			{
 				throw new UpdateProtocolException("安装包 SHA-256 校验失败");
 			}
 			output.Close();
 			File.Move(temporaryPath, destinationPath, overwrite: true);
+            progress?.Report(new UpdateProgress(UpdateStage.Verifying, 1, 1));
 		}
 		finally
 		{
@@ -218,7 +230,7 @@ internal static class UpdateProtocol
 			using MemoryStream output = new MemoryStream();
 			byte[] buffer = new byte[8192];
 			int num;
-			while ((num = await input.ReadAsync(buffer.AsMemory(), cancellationToken)) > 0)
+			while ((num = await input.ReadAsync(buffer.AsMemory(), cancellationToken).ConfigureAwait(false)) > 0)
 			{
 				if (output.Length + num > maxBytes)
 				{
@@ -247,7 +259,7 @@ internal static class UpdateProtocol
 
 	private static void EnsureTrustedUrl(string value, string fieldName)
 	{
-		if (!Uri.TryCreate(value, UriKind.Absolute, out Uri result))
+		if (!Uri.TryCreate(value, UriKind.Absolute, out Uri? result))
 		{
 			throw new UpdateProtocolException(fieldName + "无效");
 		}

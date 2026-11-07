@@ -28,7 +28,7 @@ if ((Get-FileHash -LiteralPath (Join-Path $Directory "manifest-$Version.json")).
 $zip = [IO.Compression.ZipFile]::OpenRead((Join-Path $Directory $zipName))
 try {
     $names = @($zip.Entries.FullName | Sort-Object)
-    $expected = @('ClipBridge.exe', 'ClipBridge.dll', 'ClipBridge.deps.json', 'ClipBridge.runtimeconfig.json' | Sort-Object)
+    $expected = @('ClipBridge.exe', 'ClipBridge.dll', 'ClipBridge.deps.json', 'ClipBridge.runtimeconfig.json', 'QRCoder.dll', 'QRCoder-LICENSE.txt' | Sort-Object)
     if (Compare-Object $names $expected) { throw 'ZIP 文件列表不匹配。' }
     $entry = $zip.GetEntry('ClipBridge.runtimeconfig.json').Open()
     try { $reader = [IO.StreamReader]::new($entry); $config = $reader.ReadToEnd() | ConvertFrom-Json } finally { $entry.Dispose() }

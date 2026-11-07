@@ -13,17 +13,14 @@ internal static class Program
 	[STAThread]
 	private static void Main(string[] args)
 	{
-		if (SelfUpdate.IsApplyMode(args))
-		{
-			int num = SelfUpdate.Apply(args);
-			if (num != 0)
-			{
-				string text = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "ClipBridge", "update.log");
-				MessageBox.Show("自动更新未完成，原程序已尽量保留。\n请重新打开 ClipBridge，或查看日志：\n" + text, "ClipBridge 自动更新", MessageBoxButtons.OK, MessageBoxIcon.Exclamation);
-			}
-			Environment.ExitCode = num;
-			return;
-		}
+        Application.SetHighDpiMode(HighDpiMode.PerMonitorV2);
+        Application.EnableVisualStyles();
+        Application.SetCompatibleTextRenderingDefault(false);
+        if (SelfUpdate.IsApplyMode(args))
+        {
+            Environment.ExitCode = UpdateDialog.RunInstaller(args);
+            return;
+        }
 		using EventWaitHandle eventWaitHandle = new EventWaitHandle(initialState: false, EventResetMode.AutoReset, "Local\\ClipBridge.Activate");
 		bool createdNew;
 		using (new Mutex(initiallyOwned: true, "Local\\ClipBridge.Windows", out createdNew))
@@ -34,19 +31,36 @@ internal static class Program
 				return;
 			}
 			Marshal.ThrowExceptionForHR(SetCurrentProcessExplicitAppUserModelID("ClipBridge.Windows"));
-			Application.SetHighDpiMode(HighDpiMode.PerMonitorV2);
-			Application.EnableVisualStyles();
-			Application.SetCompatibleTextRenderingDefault(defaultValue: false);
 			try
 			{
-				Application.Run(new TrayAppContext(eventWaitHandle));
+				using var context = new TrayAppContext(eventWaitHandle);
+                bool updated = Array.Exists(args, argument => argument == "--updated");
+                bool rolledBack = Array.Exists(args, argument => argument == "--update-rolled-back");
+                if (updated || rolledBack) context.ShowAfterUpdate(rolledBack, () => SignalUpdateReady(args));
+                Application.Run(context);
 			}
 			catch (Exception ex) when ((ex is SocketException || ex is CryptographicException || ex is IOException || ex is InvalidOperationException) ? true : false)
 			{
-				MessageBox.Show("启动失败：请检查 45821/45822 端口是否被占用，以及当前用户密钥存储是否可访问。\n错误类型：" + ex.GetType().Name, "ClipBridge", MessageBoxButtons.OK, MessageBoxIcon.Hand);
+				using UpdateDialog notice = CreateStartupFailureNotice(ex);
+				notice.ShowDialog();
 			}
 		}
 	}
+
+    internal static UpdateDialog CreateStartupFailureNotice(Exception error) => UpdateDialog.CreateNotice(
+        "启动失败",
+        "请检查 45821/45822 端口是否被占用，以及当前用户密钥存储是否可访问。\n错误类型：" + error.GetType().Name,
+        error: true,
+        context: "应用启动");
+
+    private static void SignalUpdateReady(string[] args)
+    {
+        int index = Array.IndexOf(args, "--update-ready");
+        if (index < 0 || index + 1 >= args.Length || !args[index + 1].StartsWith("Local\\ClipBridge.UpdateReady.", StringComparison.Ordinal)) return;
+        try { using var ready = EventWaitHandle.OpenExisting(args[index + 1]); ready.Set(); }
+        catch (WaitHandleCannotBeOpenedException) { }
+        catch (UnauthorizedAccessException) { }
+    }
 
 	[DllImport("shell32.dll", CharSet = CharSet.Unicode)]
 	private static extern int SetCurrentProcessExplicitAppUserModelID(string appId);

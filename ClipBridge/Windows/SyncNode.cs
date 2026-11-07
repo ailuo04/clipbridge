@@ -16,7 +16,7 @@ namespace ClipBridge.Windows;
 
 internal sealed class SyncNode : IDisposable
 {
-    private sealed record Peer(IPEndPoint EndPoint, DateTimeOffset LastSeen, bool Manual = false, string Name = "");
+    private sealed record Peer(IPEndPoint EndPoint, DateTimeOffset LastSeen, bool Manual = false, string Name = "", string PeerId = "");
     private readonly byte[] _key;
     private readonly DeviceHub? _hub;
     private readonly HistoryStore? _historyStore;
@@ -38,6 +38,11 @@ internal sealed class SyncNode : IDisposable
     {
         _hub = hub;
         _historyStore = historyStore;
+        if (_hub != null)
+        {
+            _hub.PeerReady += OnPeerReady;
+            foreach (NearbyDevice peer in _hub.Devices().Where(peer => peer.Authenticated && DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() - peer.Seen <= 15000)) OnPeerReady(peer);
+        }
         _deviceId = hub?.DeviceId ?? _deviceId;
         _key = SharedProtocol.DeriveKey(pairingKey);
         _pairingKeyText = Convert.ToHexString(pairingKey);
@@ -79,15 +84,17 @@ internal sealed class SyncNode : IDisposable
     {
         var now = DateTimeOffset.UtcNow;
         var visible = _peers.Values.ToList();
-        if (_hub != null) visible.AddRange(_hub.Devices().Where(p => p.Authenticated).Select(p => new Peer(new IPEndPoint(IPAddress.Parse(p.Address), SharedProtocol.TcpPort), DateTimeOffset.FromUnixTimeMilliseconds(p.Seen), false, p.Name)));
+        if (_hub != null) visible.AddRange(_hub.Devices().Where(p => p.Authenticated).Select(p => new Peer(new IPEndPoint(IPAddress.Parse(p.Address), SharedProtocol.TcpPort), DateTimeOffset.FromUnixTimeMilliseconds(p.Seen), false, p.Name, p.Id)));
         return visible.ToArray().GroupBy(p => p.EndPoint).Select(group =>
         {
             Peer? peer = group.Where(p => !p.Manual).OrderByDescending(p => p.LastSeen).FirstOrDefault();
             bool manual = group.Any(p => p.Manual);
             bool online = peer != null && now - peer.LastSeen <= TimeSpan.FromSeconds(15);
-            return new PeerSnapshot(!string.IsNullOrWhiteSpace(peer?.Name) ? peer.Name : "手动设备", group.Key.Address.ToString(), group.Key.Port, manual, online, peer?.LastSeen);
+            return new PeerSnapshot(!string.IsNullOrWhiteSpace(peer?.Name) ? peer.Name : "手动设备", group.Key.Address.ToString(), group.Key.Port, manual, online, peer?.LastSeen, peer?.PeerId ?? "");
         }).OrderByDescending(p => p.RecentlySeen).ThenBy(p => p.Address, StringComparer.Ordinal).ToArray();
     }
+
+    private readonly ConcurrentDictionary<string,byte> _activeHistorySync = new();
 
     public async Task<bool> SendTextAsync(IPAddress address, string text, CancellationToken token, int port = SharedProtocol.TcpPort)
     {
@@ -103,25 +110,85 @@ internal sealed class SyncNode : IDisposable
             using var client = new TcpClient(AddressFamily.InterNetwork);
             await client.ConnectAsync(address, port, deadline.Token);
             var message = new ClipboardMessage("clipboard", Guid.NewGuid().ToString("N"), _deviceId, text, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
-            DeviceHub? hub = _hub;
-            string? authenticatedPeerId = null;
-            if (hub != null)
-            {
-                NearbyDevice? peer = hub.Nearby.Values.FirstOrDefault(candidate => candidate.Address == address.ToString() &&
-                    candidate.Authenticated && DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() - candidate.Seen <= 15000);
-                if (peer != null && hub.IsTrusted(peer.Id)) authenticatedPeerId = peer.Id;
-            }
-            byte[] key = _hub == null ? _key : await _hub.OutgoingAsync(client.GetStream(), address, 1, _key, deadline.Token);
-            if (authenticatedPeerId != null && _hub?.IsTrusted(authenticatedPeerId) != true) authenticatedPeerId = null;
-            byte[] frame = SharedProtocol.Frame(SharedProtocol.Encrypt(key, SharedProtocol.Serialize(message)));
+            OutgoingSessionRoute route = _hub == null
+                ? new OutgoingSessionRoute(_key, null)
+                : await _hub.OutgoingRouteAsync(client.GetStream(), address, 1, _key, deadline.Token);
+            byte[] frame = SharedProtocol.Frame(SharedProtocol.Encrypt(route.Key, SharedProtocol.Serialize(message)));
             await client.GetStream().WriteAsync(frame, deadline.Token);
             Report("文字已发送，接收结果请在目标设备确认");
-            if (authenticatedPeerId != null) RecordTextHistory(authenticatedPeerId, message);
+            if (route.PeerId is string peerId) RecordTextHistory(peerId, message);
             return true;
         }
         catch (OperationCanceledException) when (token.IsCancellationRequested || _stop.IsCancellationRequested) { throw; }
         catch (Exception ex) when (ex is IOException || ex is SocketException || ex is OperationCanceledException)
         { Report("文字发送失败，请检查设备、网络和防火墙"); return false; }
+    }
+
+    public async Task<bool> SyncHistoryAsync(IPAddress address, string peerId, int port, CancellationToken token)
+    {
+        if (_hub == null || _historyStore == null || !PairingProtocol.ValidId(peerId) || !SharedProtocol.IsLocalAddress(address)) return false;
+        string sessionKey = peerId + ":" + Interlocked.Increment(ref _historyRequestSequence).ToString(System.Globalization.CultureInfo.InvariantCulture);
+        if (!_activeHistorySync.TryAdd(sessionKey, 0)) return false;
+        try { return await ExchangeHistoryAsync(address, peerId, port, token); }
+        catch (Exception exception) when (exception is IOException or SocketException or OperationCanceledException or CryptographicException or JsonException or InvalidDataException or ObjectDisposedException)
+        { System.Diagnostics.Trace.TraceWarning("ClipBridge history sync failed: {0}", exception); return false; }
+        finally { _activeHistorySync.TryRemove(sessionKey, out _); }
+    }
+
+    private long _historyRequestSequence;
+
+    private async Task<bool> ExchangeHistoryAsync(IPAddress address, string peerId, int port, CancellationToken token)
+    {
+        using var client = new TcpClient(AddressFamily.InterNetwork);
+        using var connect = CancellationTokenSource.CreateLinkedTokenSource(token, _stop.Token);
+        connect.CancelAfter(TimeSpan.FromSeconds(3));
+        await client.ConnectAsync(address, port, connect.Token);
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(token, _stop.Token);
+        deadline.CancelAfter(TimeSpan.FromSeconds(120));
+        NetworkStream stream = client.GetStream();
+        OutgoingSessionRoute route = await _hub!.OutgoingRouteAsync(stream, address, 1, _key, deadline.Token);
+        if (route.PeerId != peerId) { System.Diagnostics.Trace.TraceWarning("ClipBridge history sync route mismatch."); return false; }
+        byte[] key = route.Key;
+        string requestId = Guid.NewGuid().ToString("N");
+        HistoryStoreSnapshot localSnapshot = _historyStore!.GetSyncSnapshot(peerId, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
+        IReadOnlyList<HistorySyncMessage> localPages = HistorySyncProtocol.CreatePages(requestId, _deviceId, localSnapshot);
+        await WriteHistoryMessageAsync(stream, key, HistorySyncProtocol.CreateHello(requestId, _deviceId, localPages.Count), deadline.Token);
+        var remoteEntries = new List<HistorySyncEvent>();
+        var remoteTombstones = new List<HistoryTombstone>();
+        HistorySyncMessage hello = await ReadHistoryMessageAsync(stream, key, peerId, deadline.Token);
+        if (hello.Type != "historySyncHello" || hello.RequestId != requestId) { System.Diagnostics.Trace.TraceWarning("ClipBridge history sync hello mismatch."); return false; }
+        for (int pageNumber = 0; pageNumber < hello.PageNumber; pageNumber++)
+        {
+            await WriteHistoryMessageAsync(stream, key, HistorySyncProtocol.CreateRequest(requestId, _deviceId, pageNumber), deadline.Token);
+            HistorySyncMessage page = await ReadHistoryMessageAsync(stream, key, peerId, deadline.Token);
+            if (page.Type != "historySyncPage" || page.RequestId != requestId || page.PageNumber != pageNumber) { System.Diagnostics.Trace.TraceWarning("ClipBridge history sync page mismatch."); return false; }
+            remoteEntries.AddRange(page.Entries!); remoteTombstones.AddRange(page.Tombstones!);
+            await WriteHistoryMessageAsync(stream, key, HistorySyncProtocol.CreateAck(requestId, _deviceId, pageNumber), deadline.Token);
+        }
+        long now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        _historyStore.Merge(peerId, remoteEntries, remoteTombstones, now);
+        for (int pageNumber = 0; pageNumber < localPages.Count; pageNumber++)
+        {
+            await WriteHistoryMessageAsync(stream, key, localPages[pageNumber], deadline.Token);
+            HistorySyncMessage ack = await ReadHistoryMessageAsync(stream, key, peerId, deadline.Token);
+            if (ack.Type != "historySyncAck" || ack.RequestId != requestId || ack.PageNumber != pageNumber) { System.Diagnostics.Trace.TraceWarning("ClipBridge history sync acknowledgement mismatch."); return false; }
+        }
+        return true;
+    }
+
+    private static async Task WriteHistoryMessageAsync(Stream stream, byte[] key, HistorySyncMessage message, CancellationToken token)
+    {
+        byte[] payload = HistorySyncProtocol.Encode(message, message.PeerId, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
+        await stream.WriteAsync(SharedProtocol.Frame(SharedProtocol.Encrypt(key, payload)), token);
+    }
+
+    private static async Task<HistorySyncMessage> ReadHistoryMessageAsync(Stream stream, byte[] key, string peerId, CancellationToken token)
+    {
+        byte[] header = new byte[4]; await stream.ReadExactlyAsync(header, token);
+        int size = SharedProtocol.ReadFrameLength(header);
+        if (size < 28 || size > SharedProtocol.MaxFrameBytes) throw new InvalidDataException("Invalid history sync frame size.");
+        byte[] frame = new byte[size]; await stream.ReadExactlyAsync(frame, token);
+        return HistorySyncProtocol.Decode(SharedProtocol.Decrypt(key, frame), peerId, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
     }
 
     private byte[] AnnouncementBytes() => SharedProtocol.Encrypt(_key, SharedProtocol.Serialize(new Announcement("announce", _deviceId, Environment.MachineName, SharedProtocol.TcpPort, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds())));
@@ -196,6 +263,7 @@ internal sealed class SyncNode : IDisposable
 
     private async Task HandleClientAsync(TcpClient client, CancellationToken token)
     {
+        bool handlingHistorySync = false;
         using (client)
         using (var deadline = CancellationTokenSource.CreateLinkedTokenSource(token))
         {
@@ -210,15 +278,63 @@ internal sealed class SyncNode : IDisposable
                 if (size < 28 || size > SharedProtocol.MaxFrameBytes) return;
                 byte[] frame = new byte[size];
                 await stream.ReadExactlyAsync(frame, deadline.Token);
-                var m = JsonSerializer.Deserialize<ClipboardMessage>(SharedProtocol.Decrypt(route.Key, frame));
+                byte[] plaintext = SharedProtocol.Decrypt(route.Key, frame);
+                using var messageDocument = JsonDocument.Parse(plaintext);
+                if (messageDocument.RootElement.TryGetProperty("type", out JsonElement messageType) && messageType.ValueKind == JsonValueKind.String && messageType.GetString()?.StartsWith("historySync", StringComparison.Ordinal) == true)
+                {
+                    handlingHistorySync = true;
+                    deadline.CancelAfter(TimeSpan.FromSeconds(120));
+                    if (route.Source != null && route.Source == messageDocument.RootElement.GetProperty("peerId").GetString() && _hub?.IsTrusted(route.Source) == true)
+                        await HandleHistorySyncAsync(stream, route.Key, route.Source, HistorySyncProtocol.Decode(plaintext, route.Source, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()), deadline.Token);
+                    return;
+                }
+                ClipboardMessage? m = null;
+                try { m = JsonSerializer.Deserialize<ClipboardMessage>(plaintext); } catch (JsonException) { return; }
                 if (m == null || m.Type != "clipboard" || (route.Source != null && route.Source != m.OriginDeviceId) || m.OriginDeviceId == _deviceId || string.IsNullOrEmpty(m.MessageId) || m.MessageId.Length > 64 || string.IsNullOrEmpty(m.OriginDeviceId) || m.OriginDeviceId.Length > 64 || string.IsNullOrEmpty(m.Text) || Encoding.UTF8.GetByteCount(m.Text) > SharedProtocol.MaxTextBytes || !SharedProtocol.IsFresh(m.TimestampUtc) || string.Equals(m.Text.Trim(), _pairingKeyText, StringComparison.OrdinalIgnoreCase) || !RememberMessage(m.MessageId)) return;
                 if (route.Source != null && _hub?.IsTrusted(route.Source) == true) RecordTextHistory(route.Source, m);
                 _dispatchToUi(() => { if (!_disposed && (route.Source == null || _hub!.IsTrusted(route.Source))) RemoteTextReceived?.Invoke(m.Text); });
             }
             catch (Exception ex) when (ex is IOException || ex is SocketException || ex is CryptographicException || ex is JsonException || ex is OperationCanceledException)
-            { if (!token.IsCancellationRequested) Report("一条文字未能接收，请检查配对和网络"); }
+            { if (!token.IsCancellationRequested && !handlingHistorySync) Report("一条文字未能接收，请检查配对和网络"); }
             finally { _connections.Release(); }
         }
+    }
+
+    private async Task HandleHistorySyncAsync(Stream stream, byte[] key, string peerId, HistorySyncMessage first, CancellationToken token)
+    {
+        if (first.Type != "historySyncHello" || _historyStore == null || _hub?.IsTrusted(peerId) != true) return;
+        var localPages = HistorySyncProtocol.CreatePages(first.RequestId, _deviceId, _historyStore!.GetSyncSnapshot(peerId, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()));
+        await WriteHistoryMessageAsync(stream, key, HistorySyncProtocol.CreateHello(first.RequestId, _deviceId, localPages.Count), token);
+        var entries = new List<HistorySyncEvent>(); var tombstones = new List<HistoryTombstone>();
+        for (int number = 0; number < localPages.Count; number++)
+        {
+            HistorySyncMessage request = await ReadHistoryMessageAsync(stream, key, peerId, token);
+            if (request.Type != "historySyncRequest" || request.RequestId != first.RequestId || request.PageNumber != number) return;
+            HistorySyncMessage page = localPages[number];
+            await WriteHistoryMessageAsync(stream, key, page, token);
+            HistorySyncMessage ack = await ReadHistoryMessageAsync(stream, key, peerId, token);
+            if (ack.Type != "historySyncAck" || ack.RequestId != first.RequestId || ack.PageNumber != number) return;
+        }
+        for (int number = 0; number < first.PageNumber; number++)
+        {
+            HistorySyncMessage page = await ReadHistoryMessageAsync(stream, key, peerId, token);
+            if (page.Type != "historySyncPage" || page.RequestId != first.RequestId || page.PageNumber != number) return;
+            entries.AddRange(page.Entries!); tombstones.AddRange(page.Tombstones!);
+            await WriteHistoryMessageAsync(stream, key, HistorySyncProtocol.CreateAck(first.RequestId, _deviceId, number), token);
+        }
+        _historyStore.Merge(peerId, entries, tombstones, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
+    }
+
+    private void OnPeerReady(NearbyDevice peer)
+    {
+        if (peer.HistorySyncVersion != HistorySyncProtocol.Version || peer.Id == _deviceId || StringComparer.Ordinal.Compare(_deviceId, peer.Id) > 0) return;
+        string epochKey = peer.Id + ":" + peer.ConnectionEpoch.ToString(System.Globalization.CultureInfo.InvariantCulture);
+        if (!_activeHistorySync.TryAdd(epochKey, 0)) return;
+        _ = Task.Run(async () =>
+        {
+            try { await SyncHistoryAsync(IPAddress.Parse(peer.Address), peer.Id, SharedProtocol.TcpPort, _stop.Token); }
+            finally { _activeHistorySync.TryRemove(epochKey, out _); }
+        });
     }
 
     private void RecordTextHistory(string peerId, ClipboardMessage message)
@@ -240,6 +356,6 @@ internal sealed class SyncNode : IDisposable
     public void Dispose()
     {
         if (_disposed) return;
-        _disposed = true; _stop.Cancel(); _tcpListener.Stop(); _udp.Dispose();
+        _disposed = true; if (_hub != null) _hub.PeerReady -= OnPeerReady; _stop.Cancel(); _tcpListener.Stop(); _udp.Dispose();
     }
 }

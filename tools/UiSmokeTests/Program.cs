@@ -116,6 +116,10 @@ internal static class Program
         string defaultDll = System.IO.Path.GetFullPath(System.IO.Path.Combine(AppContext.BaseDirectory, "../../../../../bin/Release/net10.0-windows/ClipBridge.dll"));
         string dllPath = Environment.GetEnvironmentVariable("CLIPBRIDGE_TEST_DLL") ?? defaultDll;
         Assembly app = Assembly.LoadFrom(dllPath);
+        if (Array.Exists(args, value => value == "--conversation-only")) { ConversationSmoke.Run(app, capture); return; }
+        if (Array.Exists(args, value => value == "--palette-only")) { ConversationSmoke.RunPalette(app); return; }
+        if (Array.Exists(args, value => value == "--updates-only")) { UpdateDialogSmoke.Run(app, capture); return; }
+        if (Array.Exists(args, value => value == "--devices-only")) { DevicesFormSmoke.Run(app, capture); return; }
         Type formType = app.GetType("ClipBridge.Windows.ControlPanelForm")!;
         Type modeType = app.GetType("ClipBridge.Windows.UiThemeMode")!;
         Type uiType = app.GetType("ClipBridge.Windows.Ui")!;
@@ -373,6 +377,8 @@ internal static class Program
             Check(!(bool)select.Invoke(controller, new[] { lightMode })! && System.IO.File.ReadAllText(preferencePath) == "Light", "same effective theme still saves selected mode");
         }
         finally { System.IO.File.Delete(preferencePath); }
+        DevicesFormSmoke.Run(app, capture);
+        UpdateDialogSmoke.Run(app, capture);
         Console.WriteLine("ALL TESTS PASSED");
     }
 }

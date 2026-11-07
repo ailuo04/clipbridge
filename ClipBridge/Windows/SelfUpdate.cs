@@ -31,12 +31,12 @@ internal static class SelfUpdate
 		return false;
 	}
 
-	internal static Task<string> StagePackageAsync(AvailableUpdate update, CancellationToken cancellationToken)
+	internal static Task<string> StagePackageAsync(AvailableUpdate update, CancellationToken cancellationToken, IProgress<UpdateProgress>? progress = null)
 	{
-		return StagePackageAsync(update, cancellationToken, AppDataRoot);
+		return StagePackageAsync(update, cancellationToken, AppDataRoot, progress);
 	}
 
-	internal static async Task<string> StagePackageAsync(AvailableUpdate update, CancellationToken cancellationToken, string appDataRoot)
+	internal static async Task<string> StagePackageAsync(AvailableUpdate update, CancellationToken cancellationToken, string appDataRoot, IProgress<UpdateProgress>? progress = null)
 	{
 		string path = Path.Combine(appDataRoot, "updates");
 		string text = string.Concat(update.Version.Select((char character) =>
@@ -55,9 +55,10 @@ internal static class SelfUpdate
 		string stagedDirectory = Path.Combine(packageRoot, "package");
 		try
 		{
-			await UpdateProtocol.DownloadAsync(update, archivePath, cancellationToken);
+			await UpdateProtocol.DownloadAsync(update, archivePath, cancellationToken, progress).ConfigureAwait(false);
 			Directory.CreateDirectory(stagedDirectory);
-			ExtractSafely(archivePath, stagedDirectory);
+			await Task.Run(() => ExtractSafely(archivePath, stagedDirectory, cancellationToken, progress), cancellationToken).ConfigureAwait(false);
+            cancellationToken.ThrowIfCancellationRequested();
 			if (!File.Exists(Path.Combine(stagedDirectory, "ClipBridge.dll")) || !File.Exists(Path.Combine(stagedDirectory, "ClipBridge.runtimeconfig.json")))
 			{
 				throw new UpdateProtocolException("更新包缺少 ClipBridge 运行文件");
@@ -78,6 +79,10 @@ internal static class SelfUpdate
 		}
 	}
 
+	internal static void DiscardStagedPackage(string stagedDirectory) => TryCleanStagedSource(stagedDirectory, AppDataRoot);
+
+    internal static void DiscardStagedPackage(string stagedDirectory, string appDataRoot) => TryCleanStagedSource(stagedDirectory, appDataRoot);
+
 	internal static void LaunchUpdater(string stagedDirectory)
 	{
 		LaunchUpdater(stagedDirectory, AppDataRoot);
@@ -97,6 +102,11 @@ internal static class SelfUpdate
 		string text4 = Path.Combine(text3, "ClipBridge.dll");
 		File.Copy(location, text4);
 		File.Copy(text2, Path.Combine(text3, "ClipBridge.runtimeconfig.json"));
+        foreach (string dependency in new[] { "ClipBridge.deps.json", "QRCoder.dll" })
+        {
+            string source = Path.Combine(text, dependency);
+            if (File.Exists(source)) File.Copy(source, Path.Combine(text3, dependency));
+        }
 		string runtimeDirectory = System.Runtime.InteropServices.RuntimeEnvironment.GetRuntimeDirectory();
 		string? dotnetRoot = new DirectoryInfo(runtimeDirectory).Parent?.Parent?.Parent?.FullName;
 		string text5 = Path.Combine(dotnetRoot ?? string.Empty, "dotnet.exe");
@@ -128,128 +138,148 @@ internal static class SelfUpdate
 		}
 	}
 
-	internal static int Apply(string[] args)
-	{
-		return Apply(args, AppDataRoot);
-	}
+    internal static int Apply(string[] args) => Apply(args, AppDataRoot);
 
-	internal static int Apply(string[] args, string appDataRoot)
-	{
-		string path = Path.Combine(appDataRoot, "update.log");
-		Directory.CreateDirectory(Path.GetDirectoryName(path));
-		try
-		{
-			UpdateOptions updateOptions = ParseArguments(args);
-			Log(path, "开始更新，等待主程序退出。PID=" + updateOptions.ProcessId);
-			WaitForProcessExit(updateOptions.ProcessId, TimeSpan.FromSeconds(30.0));
-			string fullPath = Path.GetFullPath(updateOptions.Source);
-			string fullPath2 = Path.GetFullPath(updateOptions.Target);
-			if (!Directory.Exists(fullPath))
-			{
-				throw new DirectoryNotFoundException("更新暂存目录不存在");
-			}
-			if (!Directory.Exists(fullPath2))
-			{
-				throw new DirectoryNotFoundException("ClipBridge 安装目录不存在");
-			}
-			string text = Path.Combine(appDataRoot, "update-backup", Guid.NewGuid().ToString("N"));
-			Directory.CreateDirectory(text);
-			List<string> list = new List<string>();
-			try
-			{
-				string[] files = Directory.GetFiles(fullPath, "*", SearchOption.AllDirectories);
-				foreach (string text2 in files)
-				{
-					string relativePath = Path.GetRelativePath(fullPath, text2);
-					string fullPath3 = Path.GetFullPath(Path.Combine(fullPath2, relativePath));
-					EnsureChildPath(fullPath2, fullPath3);
-					string text3 = Path.Combine(text, relativePath);
-					Directory.CreateDirectory(Path.GetDirectoryName(fullPath3));
-					if (File.Exists(fullPath3))
-					{
-						Directory.CreateDirectory(Path.GetDirectoryName(text3));
-						File.Copy(fullPath3, text3, overwrite: true);
-					}
-					list.Add(fullPath3);
-					File.Copy(text2, fullPath3, overwrite: true);
-				}
-				Log(path, "更新文件替换完成，重新启动 ClipBridge。");
-				string item = Path.Combine(fullPath2, "ClipBridge.dll");
-				if (Process.Start(new ProcessStartInfo(updateOptions.DotnetPath)
-				{
-					UseShellExecute = false,
-					WorkingDirectory = fullPath2,
-					CreateNoWindow = true,
-					ArgumentList = { item }
-				}) == null)
-				{
-					throw new UpdateProtocolException("无法重新启动 ClipBridge");
-				}
-			}
-			catch
-			{
-				RestoreBackup(fullPath2, text, list);
-				throw;
-			}
-			try
-			{
-				Directory.Delete(text, recursive: true);
-			}
-			catch (IOException)
-			{
-			}
-			TryCleanStagedSource(fullPath, appDataRoot);
-			return 0;
-		}
-		catch (Exception ex2)
-		{
-			try
-			{
-				Log(path, "更新失败：" + ex2.GetType().Name + ": " + ex2.Message);
-			}
-			catch (IOException)
-			{
-			}
-			return 1;
-		}
-	}
+    internal static int Apply(string[] args, string appDataRoot, IProgress<UpdateProgress>? progress = null)
+    {
+        string logPath = Path.Combine(appDataRoot, "update.log");
+        Directory.CreateDirectory(appDataRoot);
+        try
+        {
+            UpdateOptions options = ParseArguments(args);
+            progress?.Report(new UpdateProgress(UpdateStage.Waiting));
+            Log(logPath, "开始更新，等待主程序退出。PID=" + options.ProcessId);
+            WaitForProcessExit(options.ProcessId, TimeSpan.FromSeconds(30));
+            string source = Path.GetFullPath(options.Source), target = Path.GetFullPath(options.Target);
+            if (!Directory.Exists(source)) throw new DirectoryNotFoundException("更新暂存目录不存在");
+            if (!Directory.Exists(target)) throw new DirectoryNotFoundException("ClipBridge 安装目录不存在");
+            string backup = Path.Combine(appDataRoot, "update-backup", Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(backup);
+            var copiedTargets = new List<string>();
+            try
+            {
+                string[] files = Directory.GetFiles(source, "*", SearchOption.AllDirectories);
+                if (files.Length == 0) throw new UpdateProtocolException("更新暂存目录为空");
+                progress?.Report(new UpdateProgress(UpdateStage.Installing, 0, files.Length));
+                foreach (string file in files)
+                {
+                    string relative = Path.GetRelativePath(source, file);
+                    string destination = Path.GetFullPath(Path.Combine(target, relative));
+                    EnsureChildPath(target, destination);
+                    string backupFile = Path.Combine(backup, relative);
+                    Directory.CreateDirectory(Path.GetDirectoryName(destination)!);
+                    if (File.Exists(destination))
+                    {
+                        Directory.CreateDirectory(Path.GetDirectoryName(backupFile)!);
+                        File.Copy(destination, backupFile, overwrite: true);
+                    }
+                    copiedTargets.Add(destination);
+                    File.Copy(file, destination, overwrite: true);
+                    progress?.Report(new UpdateProgress(UpdateStage.Installing, copiedTargets.Count, files.Length));
+                }
+                progress?.Report(new UpdateProgress(UpdateStage.Restarting));
+                Log(logPath, "更新文件替换完成，重新启动并等待主界面就绪。");
+                RestartAndConfirm(options);
+            }
+            catch
+            {
+                RestoreBackup(target, backup, copiedTargets);
+                Log(logPath, "已尝试恢复备份，重新打开原程序。");
+                try { using Process? restored = Process.Start(CreateRestartInfo(options, "--update-rolled-back")); }
+                catch (Exception ex) { Log(logPath, "原程序重新打开失败：" + ex.Message); }
+                throw;
+            }
+            // The new process has confirmed startup. Cleanup failures must not roll it back.
+            try { Directory.Delete(backup, recursive: true); }
+            catch (Exception ex) when (ex is IOException || ex is UnauthorizedAccessException) { Log(logPath, "备份清理延后：" + ex.Message); }
+            TryCleanStagedSource(source, appDataRoot);
+            Log(logPath, "新版主界面已打开，更新完成。");
+            progress?.Report(new UpdateProgress(UpdateStage.Completed, 1, 1));
+            return 0;
+        }
+        catch (Exception ex)
+        {
+            try { Log(logPath, "更新失败：" + ex.GetType().Name + ": " + ex.Message); }
+            catch (IOException) { }
+            return 1;
+        }
+    }
 
-	private static void ExtractSafely(string archivePath, string destination)
-	{
-		using ZipArchive zipArchive = ZipFile.OpenRead(archivePath);
-		if (zipArchive.Entries.Count > 100)
-		{
-			throw new UpdateProtocolException("更新包文件数量异常");
-		}
-		long num = 0L;
-		string value = Path.GetFullPath(destination).TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar;
-		foreach (ZipArchiveEntry entry in zipArchive.Entries)
-		{
-			num += entry.Length;
-			if (num > 52428800)
-			{
-				throw new UpdateProtocolException("更新包解压后过大");
-			}
-			string text = entry.FullName.Replace('\\', '/');
-			if (!string.IsNullOrWhiteSpace(text) && !text.EndsWith('/'))
-			{
-				string fullPath = Path.GetFullPath(Path.Combine(destination, text));
-				if (!fullPath.StartsWith(value, StringComparison.OrdinalIgnoreCase))
-				{
-					throw new UpdateProtocolException("更新包包含非法路径");
-				}
-				Directory.CreateDirectory(Path.GetDirectoryName(fullPath));
-				entry.ExtractToFile(fullPath, overwrite: true);
-			}
-		}
-	}
+    private static ProcessStartInfo CreateRestartInfo(UpdateOptions options, string argument)
+    {
+        var start = new ProcessStartInfo(options.DotnetPath)
+        {
+            UseShellExecute = false, WorkingDirectory = options.Target, CreateNoWindow = true
+        };
+        start.ArgumentList.Add(Path.Combine(options.Target, DllName));
+        start.ArgumentList.Add(argument);
+        return start;
+    }
+
+    private static void RestartAndConfirm(UpdateOptions options)
+    {
+        string eventName = "Local\\ClipBridge.UpdateReady." + Guid.NewGuid().ToString("N");
+        using var ready = new EventWaitHandle(false, EventResetMode.ManualReset, eventName);
+        var start = CreateRestartInfo(options, "--updated");
+        start.ArgumentList.Add("--update-ready"); start.ArgumentList.Add(eventName);
+        using Process process = Process.Start(start) ?? throw new UpdateProtocolException("无法重新启动 ClipBridge");
+        var watch = Stopwatch.StartNew();
+        while (watch.Elapsed < TimeSpan.FromSeconds(20))
+        {
+            if (ready.WaitOne(100)) return;
+            if (process.HasExited) throw new UpdateProtocolException("新版启动后提前退出，已保留备份");
+        }
+        // Stop only the process we just launched, so rollback can replace its files.
+        if (!process.HasExited) { process.Kill(); process.WaitForExit(5000); }
+        throw new UpdateProtocolException("等待新版主界面打开超时，已保留备份");
+    }
+
+    private static void ExtractSafely(string archivePath, string destination, CancellationToken cancellationToken, IProgress<UpdateProgress>? progress)
+    {
+        using ZipArchive archive = ZipFile.OpenRead(archivePath);
+        if (archive.Entries.Count > 100) throw new UpdateProtocolException("更新包文件数量异常");
+        long total = 0;
+        foreach (ZipArchiveEntry entry in archive.Entries)
+        {
+            total += entry.Length;
+            if (total > 52428800) throw new UpdateProtocolException("更新包解压后过大");
+        }
+        long extracted = 0;
+        progress?.Report(new UpdateProgress(UpdateStage.Extracting, 0, total));
+        string root = Path.GetFullPath(destination).TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar;
+        byte[] buffer = new byte[81920];
+        var elapsed = Stopwatch.StartNew(); long lastReport = 0;
+        foreach (ZipArchiveEntry entry in archive.Entries)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            string relative = entry.FullName.Replace('\\', '/');
+            if (string.IsNullOrWhiteSpace(relative) || relative.EndsWith('/')) continue;
+            string file = Path.GetFullPath(Path.Combine(destination, relative));
+            if (!file.StartsWith(root, StringComparison.OrdinalIgnoreCase)) throw new UpdateProtocolException("更新包包含非法路径");
+            Directory.CreateDirectory(Path.GetDirectoryName(file)!);
+            using Stream input = entry.Open();
+            using var output = new FileStream(file, FileMode.Create, FileAccess.Write);
+            int count;
+            while ((count = input.Read(buffer, 0, buffer.Length)) > 0)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                output.Write(buffer, 0, count); extracted += count;
+                if (elapsed.ElapsedMilliseconds - lastReport >= 100 || extracted == total)
+                {
+                    progress?.Report(new UpdateProgress(UpdateStage.Extracting, extracted, total));
+                    lastReport = elapsed.ElapsedMilliseconds;
+                }
+            }
+        }
+        cancellationToken.ThrowIfCancellationRequested();
+    }
 
 	private static UpdateOptions ParseArguments(string[] args)
 	{
-		string s = null;
-		string text = null;
-		string text2 = null;
-		string text3 = null;
+		string? s = null;
+		string? text = null;
+		string? text2 = null;
+		string? text3 = null;
 		for (int i = 1; i < args.Length - 1; i += 2)
 		{
 			switch (args[i])
@@ -325,7 +355,7 @@ internal static class SelfUpdate
 	private static void TryCleanStagedSource(string source, string appDataRoot)
 	{
 		string value = Path.GetFullPath(Path.Combine(appDataRoot, "updates")).TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar;
-		string directoryName = Path.GetDirectoryName(source);
+		string? directoryName = Path.GetDirectoryName(source);
 		if (directoryName == null || !(Path.GetFullPath(directoryName).TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar).StartsWith(value, StringComparison.OrdinalIgnoreCase))
 		{
 			return;
@@ -334,7 +364,7 @@ internal static class SelfUpdate
 		{
 			Directory.Delete(directoryName, recursive: true);
 		}
-		catch (IOException)
+		catch (Exception ex) when (ex is IOException || ex is UnauthorizedAccessException)
 		{
 		}
 	}

@@ -1,6 +1,8 @@
 package app.clipbridge.history
 
 import app.clipbridge.protocol.BridgeProtocol
+import app.clipbridge.network.composeTextReceiveStatus
+import app.clipbridge.network.fileHistoryEvent
 import org.junit.Assert.*
 import org.junit.Test
 import org.junit.Rule
@@ -19,6 +21,35 @@ class HistoryTests {
     private val peerId = "peer-a"
     @Rule @JvmField val temporaryFolder = TemporaryFolder()
 
+    @Test fun fileHistoryFactoryPreservesOfferMetadataAndKeepsLocalUrisStoreOnly() {
+        val timestamp = System.currentTimeMillis()
+        val offer = app.clipbridge.protocol.Offer(
+            id = "0123456789abcdef0123456789abcdef",
+            origin = "device-a",
+            timestamp = timestamp,
+            files = listOf(app.clipbridge.protocol.FileItem("received.txt", 17, "a".repeat(64)))
+        )
+        val event = fileHistoryEvent("peer-b", offer, "sent")
+        assertEquals(offer.id, event.eventId)
+        assertEquals(offer.origin, event.senderDeviceId)
+        assertEquals(timestamp, event.createdUtc)
+        assertEquals("file", event.contentType)
+        assertEquals("sent", event.state)
+        assertEquals(listOf(HistoryFileMetadata("received.txt", 17, "a".repeat(64))), event.files)
+
+        val root = temporaryFolder.newFolder("file-history-local-uri")
+        val store = HistoryStore(root)
+        store.upsert(HistoryLocalRecord(event, mapOf("0" to "content://downloads/clipbridge/received.txt")))
+        assertEquals(event, store.getSyncSnapshot("peer-b", timestamp).entries.single())
+        assertFalse(HistorySyncEvent::class.java.declaredFields.any { it.name.contains("uri", ignoreCase = true) || it.name.contains("path", ignoreCase = true) })
+        assertEquals("content://downloads/clipbridge/received.txt", store.getRecent("peer-b", timestamp).single().localFileReferences["0"])
+    }
+
+    @Test fun receiveStatusPreservesHistorySaveWarningAlongsideClipboardOutcome() {
+        assertEquals("已接收文字并写入剪贴板", composeTextReceiveStatus(clipboardWritten = true, historySaved = true))
+        assertEquals("已接收文字并写入剪贴板（历史记录保存失败）", composeTextReceiveStatus(clipboardWritten = true, historySaved = false))
+        assertEquals("已接收文字，请打开互传点击复制（历史记录保存失败）", composeTextReceiveStatus(clipboardWritten = false, historySaved = false))
+    }
     @Test fun retentionUsesUtcMillisecondsAndSevenDayExclusiveBoundary() {
         val nearBoundary = nowUtc - 6L * 24 * 60 * 60 * 1000 - 23L * 60 * 60 * 1000 - 59L * 60 * 1000
         assertTrue(HistoryPolicy.isVisible(nearBoundary, nowUtc))
@@ -53,6 +84,39 @@ class HistoryTests {
         assertEquals(setOf("eventId", "peerId", "deletedUtc"), HistoryTombstone::class.java.declaredFields.map { it.name }.toSet())
         val page = HistorySyncPage(1, "request-1", peerId, 0, listOf(event()), emptyList())
         assertEquals(1, page.schemaVersion)
+    }
+
+    @Test fun historySyncProtocolMatchesSharedGoldenFixtureAndRejectsInvalidData() {
+        val peer = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        val request = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        val fixture = """{"type":"historySyncPage","schemaVersion":1,"requestId":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","peerId":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","pageNumber":0,"entries":[{"schemaVersion":1,"eventId":"cccccccccccccccccccccccccccccccc","peerId":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","senderDeviceId":"dddddddddddddddddddddddddddddddd","createdUtc":1700000000000,"contentType":"file","text":null,"files":[{"name":"report.txt","size":5,"sha256":"eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"}],"state":"sent"}],"tombstones":[{"eventId":"ffffffffffffffffffffffffffffffff","peerId":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","deletedUtc":1700000000000}]}"""
+        val message = HistorySyncMessage(
+            "historySyncPage", 1, request, peer, 0,
+            listOf(HistorySyncEvent(1, "cccccccccccccccccccccccccccccccc", peer, "dddddddddddddddddddddddddddddddd", 1_700_000_000_000, "file", null, listOf(HistoryFileMetadata("report.txt", 5, "e".repeat(64))), "sent")),
+            listOf(HistoryTombstone("ffffffffffffffffffffffffffffffff", peer, 1_700_000_000_000))
+        )
+        val decoded = HistorySyncProtocol.decode(fixture.toByteArray(StandardCharsets.UTF_8), peer, System.currentTimeMillis())
+        assertEquals(message, decoded)
+        val encoded = HistorySyncProtocol.encode(decoded, peer, System.currentTimeMillis())
+        val roundtrip = HistorySyncProtocol.decode(encoded, peer, System.currentTimeMillis())
+        assertEquals(message.entries, roundtrip.entries)
+        assertEquals(message.tombstones, roundtrip.tombstones)
+        invalid { HistorySyncProtocol.encode(message.copy(schemaVersion = 2), peer, System.currentTimeMillis()) }
+        invalid { HistorySyncProtocol.encode(message.copy(peerId = "invalid-peer"), peer, System.currentTimeMillis()) }
+        invalid { HistorySyncProtocol.decode(ByteArray(HistorySyncProtocol.MAX_PAYLOAD_BYTES + 1) { ' '.code.toByte() }, peer, System.currentTimeMillis()) }
+    }
+
+    @Test fun historySyncSnapshotIsSplitIntoStableBoundedPages() {
+        val peer = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        val now = System.currentTimeMillis()
+        val entries = (0 until 12).map { index -> event(eventId = "event-$index", peerId = "local-stored-peer", createdUtc = now - index, text = ('a' + index).toString().repeat(64)) }
+        val pages = HistorySyncProtocol.createPages("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", peer, HistoryStoreSnapshot(entries, listOf(HistoryTombstone("deleted-entry", "local-stored-peer", now - 20))), maxPayloadBytes = 700, nowUtc = now)
+        assertTrue(pages.size > 1)
+        assertEquals(pages.indices.toList(), pages.map { it.pageNumber })
+        assertTrue(pages.all { HistorySyncProtocol.encode(it, peer, now, maxPayloadBytes = 700).size <= 700 })
+        assertEquals(entries.map { it.eventId }, pages.flatMap { it.entries.orEmpty() }.map { it.eventId })
+        assertTrue(pages.flatMap { it.entries.orEmpty() }.all { it.peerId == peer } && pages.flatMap { it.tombstones.orEmpty() }.all { it.peerId == peer })
+        invalid { HistorySyncProtocol.createPages("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", peer, HistoryStoreSnapshot(entries, listOf(HistoryTombstone("deleted-entry", "local-stored-peer", now - 20))), maxPayloadBytes = 700, maxPages = 1, nowUtc = now) }
     }
 
     @Test fun pageEnvelopeRejectsEmptyRequestId() {

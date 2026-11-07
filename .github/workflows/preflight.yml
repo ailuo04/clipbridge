@@ -31,3 +31,10 @@ jobs:
       - name: Test release publisher
         shell: pwsh
         run: python -m unittest discover -s tools -p 'test_publish_github.py'
+      - name: Verify package layout and updater helper
+        shell: pwsh
+        run: |
+          python -m unittest discover -s tools -p 'test_release_layout.py'
+          if ($LASTEXITCODE -ne 0) { throw 'Release layout tests failed.' }
+          dotnet run --project tools/UpdateSmokeTests/UpdateSmokeTests.csproj --configuration Release -- --verify-helper
+          if ($LASTEXITCODE -ne 0) { throw 'Updater helper smoke test failed.' }

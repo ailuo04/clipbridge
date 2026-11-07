@@ -110,12 +110,25 @@ internal static class Program
 
     static async Task RunAsync(string[] args)
     {
+        if (args.Length == 2 && args[0] == "--write-qr")
+        {
+            string invitation = PairingInvitationCodec.Format("0123456789abcdef0123456789abcdef", IPAddress.Parse("10.51.2.197"));
+            await File.WriteAllBytesAsync(args[1], PairingQr.RenderPng(invitation));
+            return;
+        }
+        if (args.Length == 1 && args[0] == "--malformed") { await ExperienceTests.MalformedDiscoveryAsync(); return; }
+        if (args.Length == 1 && args[0] == "--wake") { await DiscoveryWakeTests.RunAsync(); return; }
+        if (args.Length == 1 && args[0] == "--invitation") { PairingInvitationTests.Run(); return; }
         if (args.Length == 1 && args[0] == "--history") { HistoryTests.Run(); return; }
         if (args.Length == 1 && args[0] == "--pair-security") { await ExperienceTests.SessionCollisionAsync(); return; }
         if (args.Length == 2 && args[0] == "--experience-interop") { await ExperienceInterop.RunAsync(args[1]); return; }
         if (args.Length == 2 && args[0] == "--interop") { await InteropServerAsync(args[1]); return; }
+        PairingInvitationTests.Run();
+        await DiscoveryWakeTests.RunAsync();
         ExperienceTests.Run();
         await ExperienceTests.PairingRoundtripAsync();
+        await ExperienceTests.PairingIdentityMismatchAsync();
+        await ExperienceTests.MalformedDiscoveryAsync();
         await ExperienceTests.SessionCollisionAsync();
         byte[] pairing = Enumerable.Range(0, 32).Select(i => (byte)i).ToArray();
         byte[] key = SharedProtocol.DeriveKey(pairing);

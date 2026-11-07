@@ -96,6 +96,26 @@ jobs:
           dotnet build tools/UpdateSmokeTests/UpdateSmokeTests.csproj --configuration Release --nologo
           dotnet run --project tools/TransferTests/TransferTests.csproj --configuration Release
           python -m unittest discover -s tools -p 'test_publish_github.py'
+      - name: Verify package layout and updater helper
+        shell: pwsh
+        env:
+          CLIPBRIDGE_UPDATE_PRIVATE_KEY: ''
+          CLIPBRIDGE_ANDROID_KEYSTORE_BASE64: ''
+          CLIPBRIDGE_ANDROID_KEYSTORE_PASSWORD: ''
+          GITHUB_TOKEN: ''
+        run: |
+          python -m unittest discover -s tools -p 'test_release_layout.py'
+          if ($LASTEXITCODE -ne 0) { throw 'Release layout tests failed.' }
+          dotnet run --project tools/UpdateSmokeTests/UpdateSmokeTests.csproj --configuration Release -- --verify-helper
+          if ($LASTEXITCODE -ne 0) { throw 'Updater helper smoke test failed.' }
+      - name: Verify QR image interoperability
+        shell: pwsh
+        env:
+          CLIPBRIDGE_UPDATE_PRIVATE_KEY: ''
+          CLIPBRIDGE_ANDROID_KEYSTORE_BASE64: ''
+          CLIPBRIDGE_ANDROID_KEYSTORE_PASSWORD: ''
+          GITHUB_TOKEN: ''
+        run: '& tools/Test-QrInterop.ps1'
       - name: Verify Android and Windows interoperability
         shell: pwsh
         run: |

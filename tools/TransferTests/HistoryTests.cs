@@ -54,6 +54,9 @@ internal static class HistoryTests
         RouteValidationBindsEventsToPeer();
         SyncContractUsesStableJsonNamesAndExcludesLocalPaths();
         PageEnvelopeValidationRejectsInvalidFields();
+        SyncProtocolGoldenFixtureAndBounds();
+        SnapshotPagesStayUnderLimitAndKeepOrder();
+        DiscoveryHistoryCapabilityIsOptional();
         UpsertTreatsEquivalentFileArraysAsSameEvent();
         MergeRejectsConflictingEventIdsAtomically();
         FailedCompactionPreservesMemoryAndDurableState();
@@ -66,12 +69,13 @@ internal static class HistoryTests
         StoreReplaySkipsInteriorConflictsWithoutChangingTheOriginal();
         ClipboardReadMatcherRecognizesReadApis();
         ClipboardPreviewMethodParserHandlesNestedBraces();
+        HistoryPruneSchedulerUsesInjectableOneHourTick();
         HistoryAndBackgroundTransportAvoidClipboardReads();
         Console.WriteLine("HISTORY TESTS PASSED");
     }
 
     private static readonly Regex WinFormsClipboardReadApi = new(
-        @"\bClipboard\s*\.\s*(?:GetText|ContainsText|GetDataObject|GetData|GetFileDropList)\s*\(",
+        @"\bClipboard\s*\.\s*(?:GetText|ContainsText|GetDataObject|GetData|GetFileDropList|GetImage|GetAudioStream)\s*\(",
         RegexOptions.CultureInvariant | RegexOptions.Compiled);
     private static readonly Regex AndroidClipboardReadApi = new(
         @"\bgetPrimaryClip\s*\(|\.primaryClip\b",
@@ -86,6 +90,8 @@ internal static class HistoryTests
             "Clipboard.GetDataObject()",
             "Clipboard.GetData(\"format\")",
             "Clipboard.GetFileDropList()",
+            "Clipboard.GetImage()",
+            "Clipboard.GetAudioStream()",
             "clipboard.getPrimaryClip()",
             "clipboard.primaryClip"
         })
@@ -95,6 +101,46 @@ internal static class HistoryTests
             "clipboard read matcher permits Android setPrimaryClip");
         Program.Check(!ContainsClipboardReadApi("Clipboard.SetText(text)"),
             "clipboard read matcher permits clipboard writes");
+    }
+
+    private static void HistoryPruneSchedulerUsesInjectableOneHourTick()
+    {
+        int pruneCount = 0;
+        int warningCount = 0;
+        bool failNextPrune = false;
+        TimeSpan scheduledDueTime = TimeSpan.MaxValue;
+        TimeSpan scheduledInterval = TimeSpan.Zero;
+        Action? scheduledTick = null;
+        bool disposed = false;
+        using (var scheduler = new HistoryPruneScheduler(
+            () => { pruneCount++; if (failNextPrune) throw new IOException("injected prune failure"); },
+            _ => warningCount++,
+            (tick, dueTime, interval) =>
+            {
+                scheduledTick = tick;
+                scheduledDueTime = dueTime;
+                scheduledInterval = interval;
+                return new DelegateDisposable(() => disposed = true);
+            }))
+        {
+            Program.Check(pruneCount == 0, "history pruning starts asynchronously after host initialization");
+            Program.Check(scheduledDueTime == TimeSpan.Zero, "history pruning performs an immediate startup tick");
+            Program.Check(scheduledInterval == TimeSpan.FromHours(1), "history pruning uses a one-hour interval");
+            Program.Check(scheduledTick != null, "history pruning exposes an injectable scheduled tick");
+            scheduledTick!();
+            Program.Check(pruneCount == 1, "history pruning scheduled tick invokes the prune action");
+            failNextPrune = true;
+            scheduledTick();
+            Program.Check(warningCount == 1, "history prune errors are reported without escaping the scheduled callback");
+        }
+        Program.Check(disposed, "history pruning scheduler disposes its scheduled tick");
+    }
+
+    private sealed class DelegateDisposable : IDisposable
+    {
+        private readonly Action _dispose;
+        public DelegateDisposable(Action dispose) => _dispose = dispose;
+        public void Dispose() => _dispose();
     }
 
     private static void HistoryAndBackgroundTransportAvoidClipboardReads()
@@ -148,6 +194,22 @@ internal static class HistoryTests
         string extracted = sample[(body.OpeningBrace + 1)..body.ClosingBrace];
         Program.Check(extracted.Contains("if (true)", StringComparison.Ordinal),
             "bounded method parser balances nested braces and ignores braces in strings and comments");
+
+        string rawLiteral = "\"\"\"\" } \"\"\"\"";
+        string rawStringSample = string.Join('\n',
+            "class Sample {",
+            "    private async Task PreviewClipboardAsync() {",
+            "        var marker = " + rawLiteral + ";",
+            "        if (true) { /* } */ }",
+            "    }",
+            "    private void Next() { }",
+            "}");
+        MethodBodyBounds? rawBounds = FindMethodBodyBounds(rawStringSample, "private async Task PreviewClipboardAsync()");
+        Program.Check(rawBounds.HasValue, "bounded method parser locates method with a raw string literal");
+        MethodBodyBounds rawBody = rawBounds.GetValueOrDefault();
+        string rawExtracted = rawStringSample[(rawBody.OpeningBrace + 1)..rawBody.ClosingBrace];
+        Program.Check(rawExtracted.Contains("if (true)", StringComparison.Ordinal),
+            "bounded method parser ignores braces in C# raw string literals");
     }
 
     private readonly record struct MethodBodyBounds(int OpeningBrace, int ClosingBrace);
@@ -163,11 +225,26 @@ internal static class HistoryTests
         int depth = 0;
         bool inString = false, verbatimString = false, inCharacter = false;
         bool lineComment = false, blockComment = false, escaped = false;
+        int rawStringDelimiterLength = 0;
         for (int index = openingBrace; index < source.Length; index++)
         {
             char current = source[index];
             char next = index + 1 < source.Length ? source[index + 1] : (char)0;
 
+            if (rawStringDelimiterLength > 0)
+            {
+                if (current == '"')
+                {
+                    int quoteRunLength = 0;
+                    while (index + quoteRunLength < source.Length && source[index + quoteRunLength] == '"') quoteRunLength++;
+                    if (quoteRunLength >= rawStringDelimiterLength)
+                    {
+                        index += rawStringDelimiterLength - 1;
+                        rawStringDelimiterLength = 0;
+                    }
+                }
+                continue;
+            }
             if (lineComment)
             {
                 if (current == 13 || current == 10) lineComment = false;
@@ -201,6 +278,14 @@ internal static class HistoryTests
             if (current == '/' && next == '*') { blockComment = true; index++; continue; }
             if (current == '"')
             {
+                int quoteRunLength = 1;
+                while (index + quoteRunLength < source.Length && source[index + quoteRunLength] == '"') quoteRunLength++;
+                if (quoteRunLength >= 3)
+                {
+                    rawStringDelimiterLength = quoteRunLength;
+                    index += quoteRunLength - 1;
+                    continue;
+                }
                 inString = true;
                 verbatimString = (index > 0 && source[index - 1] == '@') || (index > 1 && source[index - 1] == (char)36 && source[index - 2] == '@');
                 continue;
@@ -217,7 +302,6 @@ internal static class HistoryTests
 
         return null;
     }
-
     private static bool ContainsClipboardReadApi(string source) =>
         WinFormsClipboardReadApi.IsMatch(source) || AndroidClipboardReadApi.IsMatch(source);
 
@@ -278,6 +362,59 @@ internal static class HistoryTests
         var missingTombstones = JsonSerializer.Deserialize<HistorySyncPage>("""{"schemaVersion":1,"requestId":"request-1","peerId":"peer-a","pageNumber":0,"entries":[]}""")!;
         RejectsInvalid(() => HistoryPolicy.ValidatePageEnvelope(missingTombstones, PeerId), "missing page tombstones rejected");
     }
+    private const string HistorySyncGoldenFixture = """{"type":"historySyncPage","schemaVersion":1,"requestId":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","peerId":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","pageNumber":0,"entries":[{"schemaVersion":1,"eventId":"cccccccccccccccccccccccccccccccc","peerId":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","senderDeviceId":"dddddddddddddddddddddddddddddddd","createdUtc":1700000000000,"contentType":"file","text":null,"files":[{"name":"report.txt","size":5,"sha256":"eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"}],"state":"sent"}],"tombstones":[{"eventId":"ffffffffffffffffffffffffffffffff","peerId":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","deletedUtc":1700000000000}]}""";
+
+    private static void SyncProtocolGoldenFixtureAndBounds()
+    {
+        const string peerId = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+        const string requestId = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        long now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        var message = new HistorySyncMessage("historySyncPage", 1, requestId, peerId, 0,
+            new[] { new HistorySyncEvent(1, "cccccccccccccccccccccccccccccccc", peerId, "dddddddddddddddddddddddddddddddd", 1_700_000_000_000, "file", null,
+                new[] { new HistoryFileMetadata("report.txt", 5, new string('e', 64)) }, "sent") },
+            new[] { new HistoryTombstone("ffffffffffffffffffffffffffffffff", peerId, 1_700_000_000_000) });
+        byte[] encoded = HistorySyncProtocol.Encode(message, peerId, now);
+        Program.Check(Encoding.UTF8.GetString(encoded) == HistorySyncGoldenFixture, "history sync page matches the cross-platform golden JSON fixture");
+        HistorySyncMessage decoded = HistorySyncProtocol.Decode(encoded, peerId, now);
+        Program.Check(decoded.Type == message.Type && decoded.Entries!.Single().Files.Single().Name == "report.txt" && decoded.Tombstones!.Single().EventId == "ffffffffffffffffffffffffffffffff", "history sync page fixture decodes without losing entries or tombstones");
+        RejectsInvalid(() => HistorySyncProtocol.Encode(message with { SchemaVersion = 2 }, peerId, now), "unknown history sync version rejected");
+        RejectsInvalid(() => HistorySyncProtocol.Encode(message with { PeerId = "invalid-peer" }, peerId, now), "invalid history sync peer ID rejected");
+        byte[] oversized = new byte[HistorySyncProtocol.MaxPayloadBytes + 1];
+        Array.Fill(oversized, (byte)' ');
+        RejectsInvalid(() => HistorySyncProtocol.Decode(oversized, peerId, now), "oversized history sync payload rejected");
+    }
+
+    private static void SnapshotPagesStayUnderLimitAndKeepOrder()
+    {
+        const string peerId = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+        const string requestId = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        long now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        HistorySyncEvent[] entries = Enumerable.Range(0, 12)
+            .Select(index => Event(eventId: "event-" + index, peerId: "local-stored-peer", createdUtc: now - index, text: new string((char)('a' + index), 64)))
+            .ToArray();
+        IReadOnlyList<HistorySyncMessage> pages = HistorySyncProtocol.CreatePages(requestId, peerId,
+            new HistoryStoreSnapshot(entries, new[] { new HistoryTombstone("deleted-entry", "local-stored-peer", now - 20) }), maxPayloadBytes: 700, nowUtc: now);
+        Program.Check(pages.Count > 1, "large history snapshot is split into multiple sync pages");
+        Program.Check(pages.Select((page, index) => page.PageNumber == index).All(value => value), "history sync page numbers are stable and contiguous");
+        Program.Check(pages.All(page => HistorySyncProtocol.Encode(page, peerId, now, maxPayloadBytes: 700).Length <= 700), "every history sync page remains under its configured byte limit");
+        Program.Check(pages.SelectMany(page => page.Entries!).Select(entry => entry.EventId).SequenceEqual(entries.Select(entry => entry.EventId)), "paged history snapshot preserves frozen entry order");
+        Program.Check(pages.SelectMany(page => page.Entries!).All(entry => entry.PeerId == peerId) && pages.SelectMany(page => page.Tombstones!).All(tombstone => tombstone.PeerId == peerId), "sync snapshot peer references are rewritten for the receiving authenticated peer");
+        RejectsInvalid(() => HistorySyncProtocol.CreatePages(requestId, peerId,
+            new HistoryStoreSnapshot(entries, new[] { new HistoryTombstone("deleted-entry", "local-stored-peer", now - 20) }), maxPayloadBytes: 700, maxPages: 1, nowUtc: now), "history page count is capped per connection");
+    }
+
+    private static void DiscoveryHistoryCapabilityIsOptional()
+    {
+        long now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        string id = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+        byte[] legacyPayload = JsonSerializer.SerializeToUtf8Bytes(new { Type = "discover", Id = id, Name = "Old peer", Platform = "android", Port = 45824, Time = now, Nonce = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", Target = "", Mac = "" });
+        byte[] legacy = Encoding.ASCII.GetBytes("CBD2").Concat(legacyPayload).ToArray();
+        Program.Check(DiscoveryProtocol.Parse(legacy).HistorySyncVersion == 0, "discovery packets without history capability default to version zero");
+        DiscoveryPacket current = DiscoveryProtocol.Create(id, "Current peer", "windows");
+        Program.Check(current.HistorySyncVersion == HistorySyncProtocol.Version, "new discovery packets advertise the supported history sync version");
+        Program.Check(DiscoveryProtocol.Parse(DiscoveryProtocol.Encode(current)).HistorySyncVersion == HistorySyncProtocol.Version, "history sync capability survives discovery roundtrip");
+    }
+
     private static void UpsertTreatsEquivalentFileArraysAsSameEvent()
     {
         string root = Path.Combine(Path.GetTempPath(), "clipbridge-history-equality-" + Guid.NewGuid().ToString("N"));

@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Drawing;
+using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Collections.Concurrent;
@@ -24,7 +25,10 @@ internal sealed class TrayAppContext : ApplicationContext
 	private readonly SyncNode _node;
     private readonly DeviceHub _devices;
     private readonly HistoryStore? _history;
+    private HistoryPruneScheduler? _historyPruneScheduler;
     private DevicesForm? _devicesForm;
+    private ConversationForm? _conversation;
+    private bool _conversationSuppressed;
 
 	private readonly FileTransferNode _files;
     private readonly string _receiveDirectory = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "Downloads", "ClipBridge");
@@ -66,6 +70,9 @@ internal sealed class TrayAppContext : ApplicationContext
 
 	private int _updateInstalling;
 
+    private UpdateDialog? _updateDialog;
+    private CancellationTokenSource? _updateDownload;
+
 	public TrayAppContext(EventWaitHandle activation)
 	{
 		_ = _dispatcher.Handle;
@@ -85,7 +92,12 @@ internal sealed class TrayAppContext : ApplicationContext
 		_node = new SyncNode(_pairingKey, Dispatch, discovery: false, hub: _devices, historyStore: _history);
         _devices.LegacyDiscovered += _node.DiscoveredLegacy;
 		_panel = CreatePanel(Convert.ToHexString(_pairingKey));
-		_files = new FileTransferNode(_pairingKey, _receiveDirectory, QueueFileRequestAsync, hub: _devices);
+		_files = new FileTransferNode(_pairingKey, _receiveDirectory, QueueFileRequestAsync, hub: _devices, historyStore: _history);
+        _conversation = CreateConversation();
+        _devices.PeerReady += peer => Dispatch(() =>
+        {
+            if (!_exiting && !_conversationSuppressed) OpenConversation(peer.Id);
+        });
         _devices.Status += text => Dispatch(() => ReportStatus(text));
         _files.Progress += progress => { _transfers[progress.TransferId] = progress; };
         _files.StatusChanged += status => Dispatch(() => ReportStatus(status));
@@ -93,7 +105,8 @@ internal sealed class TrayAppContext : ApplicationContext
 		{
 			ShowImageMargin = false
 		};
-		_trayMenu.Items.Add("打开控制面板", null, (object? _, EventArgs _) =>
+		_trayMenu.Items.Add("打开会话窗口", null, (object? _, EventArgs _) => OpenConversationOrPanel());
+        _trayMenu.Items.Add("打开控制面板", null, (object? _, EventArgs _) =>
 		{
 			_panel.ShowControlPanel();
 		});
@@ -129,9 +142,17 @@ internal sealed class TrayAppContext : ApplicationContext
 		};
 		_trayIcon.DoubleClick += (object? _, EventArgs _) =>
 		{
-			_panel.ShowControlPanel();
+			            OpenConversationOrPanel();
 		};
-		_node.RemoteTextReceived += SetClipboardText;
+		_devices.PairingRequested += () => Dispatch(() =>
+        {
+            if (_exiting || (_devicesForm != null && _devicesForm.Visible)) return;
+            _trayIcon.BalloonTipTitle = "互传 · 设备配对";
+            _trayIcon.BalloonTipText = "有设备等待配对，点击这里核对验证码。";
+            _trayIcon.ShowBalloonTip(10000);
+        });
+        _trayIcon.BalloonTipClicked += (_, _) => { if (!_devices.Pending.IsEmpty) OpenDevices(); };
+        _node.RemoteTextReceived += SetClipboardText;
 		_node.StatusChanged += ReportStatus;
 		_themeController.ThemeChanged += OnThemeChanged;
 		_refreshTimer.Tick += (object? _, EventArgs _) =>
@@ -145,13 +166,61 @@ internal sealed class TrayAppContext : ApplicationContext
 		});
 		_activationWait = ThreadPool.RegisterWaitForSingleObject(activation, (object? _, bool _) =>
 		{
-			Dispatch(_panel.ShowControlPanel);
+			Dispatch(OpenConversationOrPanel);
 		}, null, -1, executeOnlyOnce: false);
+        if (_history != null)
+        {
+            _historyPruneScheduler = new HistoryPruneScheduler(
+                () => _history.Prune(DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()),
+                error => System.Diagnostics.Trace.TraceWarning("ClipBridge history prune failed: {0}", error));
+        }
 		RefreshPanel();
 
 	}
 
-	private ControlPanelForm CreatePanel(string pairingKey, bool emitStartupEvent = true)
+	private ConversationForm CreateConversation()
+{
+    var form = new ConversationForm(
+        _history,
+        _devices.DeviceId,
+        () => _node.GetPeerSnapshots(),
+        async (peer, text, token) => await _node.SendTextAsync(IPAddress.Parse(peer.Address), text, token),
+        ShowFileSend,
+        OpenReceiveDirectory,
+        OpenDevices);
+    form.HiddenToTray += () => _conversationSuppressed = true;
+    return form;
+}
+
+private void OpenConversation(string? peerId = null)
+{
+    if (_conversation is null || _conversation.IsDisposed) return;
+    _conversationSuppressed = false;
+    _conversation.RefreshPeers(_node.GetPeerSnapshots(), peerId);
+    _conversation.Show();
+    if (_conversation.WindowState == FormWindowState.Minimized) _conversation.WindowState = FormWindowState.Normal;
+    _conversation.Activate();
+}
+
+private void OpenConversationOrPanel()
+{
+    PeerSnapshot? peer = _node.GetPeerSnapshots().FirstOrDefault(item => item.RecentlySeen && !string.IsNullOrWhiteSpace(item.PeerId));
+    if (peer is not null) OpenConversation(peer.PeerId);
+    else _panel.ShowControlPanel();
+}
+
+private void OpenReceiveDirectory()
+{
+    try
+    {
+        Directory.CreateDirectory(_receiveDirectory);
+        Process.Start(new ProcessStartInfo { FileName = _receiveDirectory, UseShellExecute = true });
+    }
+    catch (Exception error) { ReportStatus("打开保存位置失败：" + error.Message); }
+}
+
+
+private ControlPanelForm CreatePanel(string pairingKey, bool emitStartupEvent = true)
 	{
 		ControlPanelForm controlPanelForm = new ControlPanelForm(pairingKey, _themeController.Mode, emitStartupEvent);
 		controlPanelForm.ManageDevicesRequested += OpenDevices;
@@ -201,6 +270,9 @@ internal sealed class TrayAppContext : ApplicationContext
 			// preparing the panel's buffered transition.
 			ApplyThemeToTrayMenu();
 			_panel.ApplyTheme(_themeController.Mode);
+            if (_devicesForm is { IsDisposed: false }) _devicesForm.ApplyTheme();
+            if (_updateDialog is { IsDisposed: false }) _updateDialog.ApplyTheme();
+            if (_conversation is { IsDisposed: false }) _conversation.ApplyTheme();
 		}
 	}
 
@@ -243,7 +315,11 @@ internal sealed class TrayAppContext : ApplicationContext
 	{
 		if (!_exiting)
 		{
-			_panel.UpdatePeers(_node.GetPeerSnapshots());
+			PeerSnapshot[] peers = _node.GetPeerSnapshots();
+            _panel.UpdatePeers(peers);
+            _conversation?.RefreshPeers(peers);
+            if (!_conversationSuppressed && _conversation is { Visible: false } && peers.FirstOrDefault(peer => peer.RecentlySeen && !string.IsNullOrWhiteSpace(peer.PeerId)) is PeerSnapshot online)
+                OpenConversation(online.PeerId);
             _panel.SetPendingFiles(_pending.Count);
             _panel.SetPairingCount(_devices.Pending.Count);
             _trayIcon.Text = _pending.IsEmpty ? "ClipBridge · 主动发送" : $"ClipBridge · {_pending.Count} 个待接收请求";
@@ -253,7 +329,7 @@ internal sealed class TrayAppContext : ApplicationContext
 
 	private async Task CheckForUpdatesAsync(bool manual)
 	{
-		if (_exiting || Interlocked.Exchange(ref _updateCheckRunning, 1) != 0)
+		if (_exiting || Volatile.Read(ref _updateInstalling) != 0 || Interlocked.Exchange(ref _updateCheckRunning, 1) != 0)
 		{
 			return;
 		}
@@ -272,7 +348,7 @@ internal sealed class TrayAppContext : ApplicationContext
 					{
 						if (manual)
 						{
-							MessageBox.Show(_panel, "当前已经是最新版本。", "检查更新", MessageBoxButtons.OK, MessageBoxIcon.Asterisk);
+							UpdateDialog.ShowNotice(_panel, "已是最新版本", "当前已经是最新版本，无需安装更新。");
 						}
 					}
 					else
@@ -297,7 +373,7 @@ internal sealed class TrayAppContext : ApplicationContext
 					ReportStatus("更新检查失败");
 					if (manual)
 					{
-						MessageBox.Show(_panel, "暂时无法检查更新。\n" + ex4.Message, "检查更新", MessageBoxButtons.OK, MessageBoxIcon.Exclamation);
+						UpdateDialog.ShowNotice(_panel, "更新检查未完成", ex4.Message, error: true);
 					}
 				}
 			});
@@ -307,69 +383,78 @@ internal sealed class TrayAppContext : ApplicationContext
 			Interlocked.Exchange(ref _updateCheckRunning, 0);
 			Dispatch(() =>
 			{
-				_panel.SetUpdateCheckState(enabled: true);
+				_panel.SetUpdateCheckState(enabled: Volatile.Read(ref _updateInstalling) == 0);
 			});
 		}
 	}
 
-	private void PromptForUpdate(AvailableUpdate update)
-	{
-		string text = (string.IsNullOrWhiteSpace(update.Notes) ? "无更新说明。" : update.Notes.Trim());
-		_panel.ShowControlPanel();
-		if (MessageBox.Show(_panel, "发现新版本 " + update.Version + "。\n\n" + text + "\n\n是否下载并自动安装？应用会重启一次。", "发现更新", MessageBoxButtons.YesNo, MessageBoxIcon.Asterisk) == DialogResult.Yes)
-		{
-			_ = DownloadAndInstallUpdateAsync(update);
-		}
-	}
+    private void PromptForUpdate(AvailableUpdate update)
+    {
+        _panel.ShowControlPanel();
+        if (_updateDialog is { IsDisposed: false }) { _updateDialog.Show(); _updateDialog.Activate(); return; }
+        var dialog = new UpdateDialog(update.Version, update.Notes, update.Size);
+        _updateDialog = dialog;
+        dialog.InstallRequested += () => _ = DownloadAndInstallUpdateAsync(update, dialog);
+        dialog.CancelRequested += () => _updateDownload?.Cancel();
+        dialog.FormClosed += (_, _) => { if (ReferenceEquals(_updateDialog, dialog)) _updateDialog = null; };
+        dialog.Show(_panel);
+    }
 
-	private async Task DownloadAndInstallUpdateAsync(AvailableUpdate update)
-	{
-		if (_exiting || Interlocked.Exchange(ref _updateInstalling, 1) != 0)
-		{
-			return;
-		}
-		ReportStatus("正在下载更新 " + update.Version + "...");
-		try
-		{
-			string stagedDirectory = await SelfUpdate.StagePackageAsync(update, _updateLifetime.Token);
-			Dispatch(() =>
-			{
-				if (!_exiting)
-				{
-					try
-					{
-						SelfUpdate.LaunchUpdater(stagedDirectory);
-					}
-					catch (Exception ex)
-					{
-						Interlocked.Exchange(ref _updateInstalling, 0);
-						ReportStatus("无法启动更新程序");
-						MessageBox.Show(_panel, "更新未安装。\n" + ex.Message, "自动更新", MessageBoxButtons.OK, MessageBoxIcon.Exclamation);
-						return;
-					}
-					ReportStatus("更新已校验，正在重启安装");
-					ExitThread();
-				}
-			});
-		}
-		catch (OperationCanceledException) when (_exiting)
-		{
-		}
-		catch (Exception ex2)
-		{
-			Exception ex3 = ex2;
-			Exception ex4 = ex3;
-			Interlocked.Exchange(ref _updateInstalling, 0);
-			Dispatch(() =>
-			{
-				if (!_exiting)
-				{
-					ReportStatus("更新下载或校验失败");
-					MessageBox.Show(_panel, "更新未安装。\n" + ex4.Message, "自动更新", MessageBoxButtons.OK, MessageBoxIcon.Exclamation);
-				}
-			});
-		}
-	}
+    private async Task DownloadAndInstallUpdateAsync(AvailableUpdate update, UpdateDialog dialog)
+    {
+        if (_exiting || Interlocked.Exchange(ref _updateInstalling, 1) != 0) return;
+        using var cancellation = CancellationTokenSource.CreateLinkedTokenSource(_updateLifetime.Token);
+        _updateDownload = cancellation;
+        dialog.BeginDownload();
+        _panel.SetUpdateCheckState(enabled: false, "正在更新…");
+        var progress = new Progress<UpdateProgress>(value =>
+        {
+            if (!_exiting && !dialog.IsDisposed && !cancellation.IsCancellationRequested) dialog.Report(value);
+        });
+        ReportStatus("正在下载更新 " + update.Version + "…");
+        string? staged = null; bool handedOff = false;
+        try
+        {
+            staged = await SelfUpdate.StagePackageAsync(update, cancellation.Token, progress);
+            cancellation.Token.ThrowIfCancellationRequested();
+            if (_exiting) return;
+            dialog.Report(new UpdateProgress(UpdateStage.Waiting));
+            SelfUpdate.LaunchUpdater(staged);
+            handedOff = true;
+            ReportStatus("更新已校验，独立安装窗口正在接管");
+            dialog.Finish();
+            ExitThread();
+        }
+        catch (OperationCanceledException) when (cancellation.IsCancellationRequested)
+        {
+            if (!_exiting) { ReportStatus("已取消更新，当前版本可继续使用"); if (!dialog.IsDisposed) dialog.Finish(); }
+        }
+        catch (Exception ex)
+        {
+            if (!_exiting)
+            {
+                ReportStatus("更新未完成：" + ex.Message);
+                if (!dialog.IsDisposed) dialog.ShowFailure(ex.Message);
+            }
+        }
+        finally
+        {
+            if (staged != null && !handedOff) SelfUpdate.DiscardStagedPackage(staged);
+            if (ReferenceEquals(_updateDownload, cancellation)) _updateDownload = null;
+            Interlocked.Exchange(ref _updateInstalling, 0);
+            if (!_exiting) _panel.SetUpdateCheckState(enabled: true);
+        }
+    }
+
+    internal void ShowAfterUpdate(bool rolledBack, Action ready)
+    {
+        Dispatch(() =>
+        {
+            _panel.ShowControlPanel();
+            ReportStatus(rolledBack ? "更新未完成，已尝试恢复原版本" : "更新完成，已自动打开主界面");
+            ready();
+        });
+    }
 
     private async Task PreviewClipboardAsync()
     {
@@ -506,13 +591,16 @@ internal sealed class TrayAppContext : ApplicationContext
 		{
 			_exiting = true;
 			_updateLifetime.Cancel();
+            _updateDialog?.Dispose();
 			_activationWait.Unregister(null);
 			_themeController.ThemeChanged -= OnThemeChanged;
 			_systemThemeWatcher.Dispose();
+            _historyPruneScheduler?.Dispose();
 			_refreshTimer.Dispose();
 			_updateTimer.Dispose();
 			_files.Dispose();
             _transfersForm?.Dispose();
+            _conversation?.Dispose();
 			_node.Dispose();
             _devices.Dispose(); _devicesForm?.Dispose();
 			_trayIcon.Visible = false;

@@ -7,6 +7,7 @@
   </PropertyGroup>
   <ItemGroup>
     <Compile Include="..\..\ClipBridge\Windows\SelfUpdate.cs" Link="SelfUpdate.cs" />
+    <Compile Include="..\..\ClipBridge\Windows\UpdateProgress.cs" Link="UpdateProgress.cs" />
     <Compile Include="..\..\ClipBridge\Windows\UpdateProtocol.cs" Link="UpdateProtocol.cs" />
     <Compile Include="..\..\ClipBridge\Windows\UpdateProtocolException.cs" Link="UpdateProtocolException.cs" />
     <Compile Include="..\..\ClipBridge\Windows\AvailableUpdate.cs" Link="AvailableUpdate.cs" />

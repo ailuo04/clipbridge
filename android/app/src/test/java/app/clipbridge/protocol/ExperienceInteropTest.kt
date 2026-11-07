@@ -1,4 +1,5 @@
 package app.clipbridge.protocol
+import app.clipbridge.history.*
 import org.junit.Test
 import org.junit.Assert.*
 import org.junit.Assume.assumeTrue
@@ -49,6 +50,17 @@ class ExperienceInteropTest {
             BridgeProtocol.writeJson(s.getOutputStream(),key,Offer(id,self,System.currentTimeMillis(),listOf(file)).json())
             FileProtocol.requireReply(read(s,key),id,"accept"); BridgeProtocol.write(s.getOutputStream(),key,FileProtocol.chunk(id,0,0,data)); BridgeProtocol.writeJson(s.getOutputStream(),key,FileProtocol.reply("finish",id)); FileProtocol.requireReply(read(s,key),id,"complete")
         }
+        val historyRoot=Files.createTempDirectory("clipbridge-history-interop-")
+        val history=HistoryStore(historyRoot.toFile())
+        val syncNow=config.getLong("historySeedUtc")
+        val fileMeta=listOf(HistoryFileMetadata("shared.bin",23,"a".repeat(64)))
+        val androidLocalFile=Files.createTempFile(historyRoot,"android-local-",".bin").toFile().apply { writeText("keep Android local bytes") }
+        val kotlinDeletedFile=Files.createTempFile(historyRoot,"kotlin-deleted-",".bin").toFile().apply { writeText("keep deleted Kotlin bytes") }
+        val windowsDeletedFile=Files.createTempFile(historyRoot,"windows-deleted-",".bin").toFile().apply { writeText("keep deleted Windows bytes") }
+        history.upsert(HistoryLocalRecord(HistorySyncEvent(1,"android-local",remote,self,syncNow,"file",null,fileMeta,"sent"),mapOf("0" to androidLocalFile.absolutePath)))
+        history.upsert(HistoryLocalRecord(HistorySyncEvent(1,"kotlin-deleted",remote,self,syncNow,"file",null,fileMeta,"sent"),mapOf("0" to kotlinDeletedFile.absolutePath)))
+        history.upsert(HistoryLocalRecord(HistorySyncEvent(1,"windows-deleted",remote,remote,syncNow,"file",null,fileMeta,"sent"),mapOf("0" to windowsDeletedFile.absolutePath)))
+        history.deleteRecord(remote,"kotlin-deleted",syncNow)
         ServerSocket(0).use { textServer -> ServerSocket(0).use { fileServer ->
             textServer.soTimeout=20000; fileServer.soTimeout=20000
             Socket("127.0.0.1",config.getInt("controlPort")).use { s -> DataOutputStream(s.getOutputStream()).apply { writeInt(textServer.localPort); writeInt(fileServer.localPort); flush() } }
@@ -61,6 +73,34 @@ class ExperienceInteropTest {
                 assertEquals("Windows v2 file 中文🙂",bytes.toString("UTF-8")); assertEquals(offer.files[0].sha256.lowercase(),BridgeProtocol.hex(MessageDigest.getInstance("SHA-256").digest(bytes.toByteArray())))
                 BridgeProtocol.writeJson(s.getOutputStream(),key,FileProtocol.reply("complete",offer.id))
             }
+            textServer.accept().use { s ->
+                s.soTimeout=20000; val key=incoming(s,1)
+                val first=HistorySyncProtocol.decode(BridgeProtocol.read(s.getInputStream(),key),remote,System.currentTimeMillis())
+                assertEquals("historySyncHello",first.type)
+                val localPages=HistorySyncProtocol.createPages(first.requestId,self,history.getSyncSnapshot(remote,System.currentTimeMillis()))
+                fun send(message: HistorySyncMessage) = BridgeProtocol.write(s.getOutputStream(),key,HistorySyncProtocol.encode(message,self,System.currentTimeMillis()))
+                fun receive()=HistorySyncProtocol.decode(BridgeProtocol.read(s.getInputStream(),key),remote,System.currentTimeMillis())
+                send(HistorySyncProtocol.createHello(first.requestId,self,localPages.size))
+                for(number in localPages.indices) {
+                    val request=receive(); assertEquals("historySyncRequest",request.type); assertEquals(number,request.pageNumber)
+                    send(localPages[number])
+                    val ack=receive(); assertEquals("historySyncAck",ack.type); assertEquals(number,ack.pageNumber)
+                }
+                val incomingEntries=mutableListOf<HistorySyncEvent>(); val incomingTombstones=mutableListOf<HistoryTombstone>()
+                repeat(first.pageNumber) { number ->
+                    val page=receive(); assertEquals("historySyncPage",page.type); assertEquals(number,page.pageNumber)
+                    incomingEntries+=page.entries!!; incomingTombstones+=page.tombstones!!
+                    send(HistorySyncProtocol.createAck(first.requestId,self,number))
+                }
+                history.merge(remote,incomingEntries,incomingTombstones,System.currentTimeMillis())
+                val records=history.getRecent(remote,System.currentTimeMillis())
+                assertTrue(records.any { it.event.eventId=="android-local" && it.localFileReferences["0"]==androidLocalFile.absolutePath })
+                assertTrue(records.none { it.event.eventId=="kotlin-deleted" || it.event.eventId=="windows-deleted" })
+                assertTrue(records.any { it.event.contentType=="text" && it.event.text=="Windows → JVM v2 中文🙂" })
+                assertTrue(records.any { it.event.contentType=="file" && it.event.files.any { item -> item.name=="from-windows.txt" } })
+                assertTrue(kotlinDeletedFile.readText()=="keep deleted Kotlin bytes" && windowsDeletedFile.readText()=="keep deleted Windows bytes")
+            }
         } }
+
     }
 }
