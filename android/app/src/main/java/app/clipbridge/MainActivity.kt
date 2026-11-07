@@ -188,14 +188,13 @@ class MainActivity : Activity() {
     private fun conversationPage() {
         val service = BridgeService.current
         val current = target()
-        val card = ui.card(body, ui.tint)
+        val card = ui.accentCard(body)
         if (current == null) {
             ui.deviceSummary(card, "连接你的第一台设备", "配对后，这里会成为轻量的发送与接收窗口。", 0, "等待设备连接")
             ui.actionPair(card,
                 ui.button("打开设备管理") { selectPage(1) },
                 ui.button("发送到附近设备") { selectPage(1) })
             ui.listAction(card, "打开本地接收文件", "查看或单独管理已保存的文件", 9) { safe { openLocalFiles() } }
-            ui.empty(body, "还没有选中的设备", "先在设备页完成配对；连接后，文字和文件历史会按设备分别保存。", 0)
             return
         }
         ui.deviceSummary(card, current.name, current.address, 0,
@@ -205,7 +204,7 @@ class MainActivity : Activity() {
 
         val pendingFiles = service?.pending?.values?.filter { !it.decision.isDone } ?: emptyList()
         pendingFiles.forEach { request ->
-            val incoming = ui.card(body, ui.mint)
+            val incoming = ui.accentCard(body, ui.mint)
             incoming.addView(ui.badge("等待你确认", ui.primary))
             ui.gap(incoming, 7)
             incoming.addView(ui.text(request.offer.files.first().name + if (request.offer.files.size > 1) " 等 ${request.offer.files.size} 个文件" else "", 16f, bold = true))
@@ -225,30 +224,32 @@ class MainActivity : Activity() {
         val history = if (service != null && current.id.isNotBlank() && !current.id.startsWith("legacy:") && !current.id.startsWith("manual:")) {
             runCatching { service.recentHistory(current.id) }.getOrDefault(emptyList())
         } else emptyList()
-        val timeline = ListView(this).apply {
-            isVerticalScrollBarEnabled = true
-            divider = null
-            setPadding(ui.dp(2), 0, ui.dp(2), 0)
-            clipToPadding = false
-            contentDescription = "${current.name} 的最近七天历史记录"
+        if (history.isEmpty()) {
+            ui.empty(body, "这里还没有历史记录", "点击发送后才会记录；七天后自动过期，删除记录不会删除本地文件。", 2)
+        } else {
+            ui.sectionLabel(body, "最近 7 天", "${history.size} 条记录")
+            val timeline = ListView(this).apply {
+                isVerticalScrollBarEnabled = true
+                divider = null
+                clipToPadding = false
+                contentDescription = "${current.name} 的最近七天历史记录"
+            }
+            val adapter = HistoryTimelineAdapter(
+                timeline,
+                ui,
+                { service?.localDeviceId() ?: "" },
+                { value -> safe { getSystemService(ClipboardManager::class.java).setPrimaryClip(ClipData.newPlainText("ClipBridge", value)); message("已复制文本") } },
+                { uri -> safe { startActivity(Intent(Intent.ACTION_VIEW).setData(uri).addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)) } },
+                { entry -> shareHistory(entry) },
+                { entry -> safe { service?.deleteHistory(entry.event.peerId, entry.event.eventId); signature = ""; message("已删除历史记录，本地文件保留"); render() } }
+            )
+            adapter.submit(history)
+            timeline.adapter = adapter
+            body.addView(timeline, LinearLayout.LayoutParams(-1, ui.dp(360)).apply { bottomMargin = ui.dp(14) })
         }
-        val adapter = HistoryTimelineAdapter(
-            timeline,
-            ui,
-            { service?.localDeviceId() ?: "" },
-            { value -> safe { getSystemService(ClipboardManager::class.java).setPrimaryClip(ClipData.newPlainText("ClipBridge", value)); message("已复制文本") } },
-            { uri -> safe { startActivity(Intent(Intent.ACTION_VIEW).setData(uri).addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)) } },
-            { entry -> shareHistory(entry) },
-            { entry -> safe { service?.deleteHistory(entry.event.peerId, entry.event.eventId); signature = ""; message("已删除历史记录，本地文件保留"); render() } }
-        )
-        adapter.submit(history)
-        timeline.adapter = adapter
-        card.addView(ui.text("最近 7 天 · ${history.size} 条记录", 13f, ui.muted))
-        body.addView(timeline, LinearLayout.LayoutParams(-1, ui.dp(if (history.isEmpty()) 126 else 360)).apply { bottomMargin = ui.dp(12) })
-        if (history.isEmpty()) ui.empty(body, "这里还没有历史记录", "点击发送后才会记录；七天后自动过期，删除记录不会删除本地文件。", 2)
 
         if (sharedUris.isNotEmpty() || sharedText != null) {
-            val shared = ui.card(body, ui.tint)
+            val shared = ui.accentCard(body)
             ui.heading(shared, "分享内容已准备好", "选择当前设备并主动确认发送")
             action(shared, if (sharedUris.isNotEmpty()) "预览并发送 ${sharedUris.size} 个文件" else "预览分享的文字", true, current.online) {
                 if (sharedUris.isNotEmpty()) confirmFiles(sharedUris) else sharedText?.let(::previewText)
@@ -260,7 +261,6 @@ class MainActivity : Activity() {
         val sendFiles = ui.button("发送文件") { safe { pickFiles() } }
         ui.actionPair(actions, sendText, sendFiles)
         ui.listAction(actions, "打开本地接收文件", "单独管理保存下来的文件，不受七天历史影响", 9) { safe { openLocalFiles() } }
-        body.addView(actions, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = ui.dp(14) })
     }
 
     private fun shareHistory(entry: app.clipbridge.history.HistoryLocalRecord) {
@@ -297,7 +297,7 @@ class MainActivity : Activity() {
     private fun devicesPage() {
         val service=BridgeService.current; val hub=service?.hub
         hub?.pending?.values?.sortedBy { it.expires }?.forEach { request ->
-            val card=ui.card(body,ui.mint)
+            val card=ui.accentCard(body, ui.mint)
             card.addView(ui.badge("等待双方确认",ui.green)); ui.gap(card,8)
             card.addView(ui.text("与 "+request.name+" 配对",19f,bold=true))
             card.addView(ui.text("请确认两台设备显示相同的六位数字。",13f,ui.muted))
@@ -312,13 +312,13 @@ class MainActivity : Activity() {
             else card.addView(ui.text("已确认，等待另一台设备…",14f,ui.green))
         }
         if(!PlatformCompat.canUseLan(this)) {
-            val permission=ui.card(body,ui.mint)
+            val permission=ui.accentCard(body, ui.mint)
             ui.deviceSummary(permission,"先允许本地网络访问","授权后才能搜索和连接附近设备。",10)
             action(permission,"开启本地网络权限",true) { startConnection() }
             ui.listAction(permission,"打开系统权限设置") { safe { startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS,Uri.parse("package:$packageName"))) } }
         }
         val current=target()
-        val targetCard=ui.card(body,ui.tint)
+        val targetCard=ui.accentCard(body)
         targetCard.addView(ui.text("当前发送目标",11f,ui.primary,true)); ui.gap(targetCard,8)
         ui.deviceSummary(targetCard,current?.name ?: "连接你的第一台设备",
             current?.address ?: "同一 Wi-Fi 或热点下，扫码或发现即可配对。",
@@ -350,7 +350,7 @@ class MainActivity : Activity() {
         }
         body.addView(send,LinearLayout.LayoutParams(-1,-2).apply { bottomMargin=ui.dp(14) })
         if(sharedUris.isNotEmpty() || sharedText!=null) {
-            val share=ui.card(body,ui.tint)
+            val share=ui.accentCard(body)
             share.addView(ui.text("分享内容已准备好",16f,bold=true))
             share.addView(ui.text("先选择在线设备，确认后再发送。",12f,ui.muted))
             action(share,if(sharedUris.isNotEmpty()) "发送分享的 "+sharedUris.size+" 个文件" else "预览分享的文字",true,enabled) {
@@ -422,7 +422,7 @@ class MainActivity : Activity() {
         val visibleRequests=if(filter==1) emptyList() else requests
         if(visibleRequests.isNotEmpty()) ui.heading(body,"等待你接收 · "+visibleRequests.size,"只有你确认后，文件才会保存。")
         visibleRequests.forEach { request ->
-            val card=ui.card(body,ui.tint)
+            val card=ui.accentCard(body)
             card.addView(ui.badge("等待接收",ui.primary)); ui.gap(card,8)
             card.addView(ui.text(request.offer.files.first().name+(if(request.offer.files.size>1) " 等 "+request.offer.files.size+" 个文件" else ""),17f,bold=true))
             card.addView(ui.text("来自 "+request.address+" · "+ui.size(request.offer.total),12f,ui.muted)); ui.gap(card,8)
@@ -532,7 +532,7 @@ class MainActivity : Activity() {
     }
     private fun updateSettings() {
         ui.heading(body,"应用更新","当前版本 "+updates.versionName)
-        val card=ui.card(body,ui.tint)
+        val card=ui.accentCard(body)
         val kind=UiPresentation.updateKind(updates.state,updates.ready)
         ui.deviceSummary(card,when(kind) { "ready"->"新版本已准备好"; "downloading"->"正在下载更新"; "checking"->"正在检查更新"; "error"->"暂时未能完成更新"; "latest"->"已是最新版本"; else->"让互传保持最新" },updates.state,11)
         updates.available?.let { update ->

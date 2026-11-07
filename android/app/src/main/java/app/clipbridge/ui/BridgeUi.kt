@@ -12,18 +12,18 @@ import android.widget.*
 
 class BridgeUi(val activity: Activity) {
     val dark = activity.resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK == Configuration.UI_MODE_NIGHT_YES
-    val canvas = color("#F5F7FC", "#111827")
-    val surface = color("#FFFFFF", "#202B40")
-    val field = color("#F0F3FA", "#29354B")
+    val canvas = color("#E4E9F4", "#0E1422")
+    val surface = color("#FFFFFF", "#232E43")
+    val field = color("#F2F5FC", "#263145")
     val ink = color("#1D2845", "#EDF2FC")
-    val muted = color("#5D6B84", "#B0BDD4")
+    val muted = color("#586681", "#B0BDD4")
     val primary = color("#515CE0", "#A8B8FF")
     val primaryFill = color("#4B57D2", "#4A59C9")
-    val tint = color("#EEF0FF", "#2C395A")
-    val mint = color("#EAF7F1", "#1C3937")
+    val tint = color("#DFE5FF", "#2E3D5E")
+    val mint = color("#D8F0E5", "#1C3B36")
     val green = color("#166F54", "#97E2C9")
     val danger = color("#AD354F", "#FFA0B3")
-    val line = color("#DFE5F0", "#44516A")
+    val line = color("#D8E0EE", "#3A475F")
     private val sheets = BridgeDialogs(this)
     val stackActions get() = UiPresentation.stackActions(activity.resources.configuration.screenWidthDp, activity.resources.configuration.fontScale)
     private fun color(light: String, night: String) = Color.parseColor(if(dark) night else light)
@@ -41,9 +41,18 @@ class BridgeUi(val activity: Activity) {
         includeFontPadding = true; setLineSpacing(dp(2).toFloat(),1f); setPadding(0,dp(2),0,dp(2))
     }
     fun gap(parent: LinearLayout, height: Int = 12) { parent.addView(View(activity),LinearLayout.LayoutParams(1,dp(height))) }
+    /** Cards carry a visible rim so each surface separates from the canvas on its own, not by shadow alone. */
     fun card(parent: LinearLayout, color: Int = surface): LinearLayout = column(18).apply {
-        background = glass(color); elevation = dp(1).toFloat(); clipToOutline = true
+        background = glass(color); elevation = dp(3).toFloat(); clipToOutline = true
         parent.addView(this,LinearLayout.LayoutParams(-1,-2).apply { bottomMargin = dp(14) })
+    }
+    /** Accent cards sit on a near-identical canvas tone, so they get an explicit accent rim. */
+    fun accentCard(parent: LinearLayout, color: Int = tint): LinearLayout = card(parent, color).apply {
+        background = rimmed(color)
+    }
+    fun rimmed(color: Int, radius: Int = 24): Drawable = GradientDrawable().apply {
+        setColor(color); cornerRadius = dp(radius).toFloat()
+        setStroke(dp(1), GlassDrawable.mix(canvas, primary, if(dark) .45f else .34f))
     }
     fun button(label: String, primaryAction: Boolean = false, onClick: () -> Unit): Button = Button(activity).apply {
         text = label; isAllCaps = false; textSize = 14f; typeface = Typeface.create("sans-serif-medium",Typeface.NORMAL)
@@ -61,15 +70,22 @@ class BridgeUi(val activity: Activity) {
         setPadding(dp(14),dp(10),dp(14),dp(10)); setOnClickListener { onClick() }
     }
     fun heading(parent: LinearLayout, title: String, detail: String? = null) {
+        gap(parent,18)
+        parent.addView(text(title,17f,ink,true).apply { isAccessibilityHeading = true; letterSpacing = -.01f })
+        if(detail != null) parent.addView(text(detail,12f,muted).apply { setPadding(0,0,0,0) })
         gap(parent,10)
-        parent.addView(text(title,18f,bold=true).apply { isAccessibilityHeading = true })
-        if(detail != null) parent.addView(text(detail,12f,muted))
-        gap(parent,10)
+    }
+    /** Inline section header with a right-aligned count, for lists that follow it. */
+    fun sectionLabel(parent: LinearLayout, title: String, count: String) {
+        val row = row()
+        row.addView(text(title,12f,muted,true).apply { letterSpacing = .06f }, LinearLayout.LayoutParams(0,-2,1f))
+        row.addView(text(count,12f,muted))
+        parent.addView(row, LinearLayout.LayoutParams(-1,-2).apply { bottomMargin = dp(8) })
     }
     fun pageHeader(parent: LinearLayout, title: String, detail: String) {
         parent.addView(text("CLIPBRIDGE",10f,primary,true).apply { letterSpacing = .16f; importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO })
-        parent.addView(text(title,28f,bold=true).apply { isAccessibilityHeading = true })
-        parent.addView(text(detail,13f,muted)); gap(parent,20)
+        parent.addView(text(title,27f,ink,true).apply { isAccessibilityHeading = true; letterSpacing = -.02f })
+        parent.addView(text(detail,13f,muted)); gap(parent,16)
     }
     fun badge(value: String, color: Int = green): TextView = text(value,11f,color,true).apply {
         background = background(GlassDrawable.mix(surface,color,if(dark) .15f else .08f),20)
@@ -127,7 +143,10 @@ class BridgeUi(val activity: Activity) {
         background=ripple(if(selected) glass(tint,20) else background(Color.TRANSPARENT,20),20)
         contentDescription=label+(if(count>0) "，$count 个待处理" else "")+(if(selected) "，已选择" else "")
         addView(icon(kind,if(selected) primary else muted),LinearLayout.LayoutParams(dp(23),dp(23)))
-        addView(text(label+(if(count>0) " · "+if(count>99) "99+" else count else ""),11f,if(selected) primary else muted,selected))
+        val caption=text(label+(if(count>0) " · "+if(count>99) "99+" else count else ""),11f,if(selected) primary else muted,selected).apply {
+            gravity=Gravity.CENTER; setPadding(0,dp(4),0,0); includeFontPadding=false
+        }
+        addView(caption,LinearLayout.LayoutParams(-1,-2))
         setOnClickListener { onClick() }
     }
     fun input(hintText: String, value: String = ""): EditText = EditText(activity).apply {
