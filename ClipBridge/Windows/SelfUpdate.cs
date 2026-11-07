@@ -16,6 +16,9 @@ internal static class SelfUpdate
 
 	internal const string ApplyArgument = "--apply-update";
 
+    internal const int ExistingInstanceExitCode = 10;
+    internal const int StartupUnconfirmedResult = 2;
+
 	private const string DllName = "ClipBridge.dll";
 
 	private const string RuntimeConfigName = "ClipBridge.runtimeconfig.json";

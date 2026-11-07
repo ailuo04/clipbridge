@@ -88,13 +88,20 @@ jobs:
           $line = $output | Where-Object { $_ -like 'InnoCompilerPath=*' } | Select-Object -Last 1
           if (-not $line) { throw '没有找到 InnoCompilerPath 输出。' }
           "INNO_COMPILER_PATH=$($line -replace '^InnoCompilerPath=', '')" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+      - name: Verify shared brand icon
+        shell: pwsh
+        run: '& tools/Test-BrandIcon.ps1'
       - name: Build test projects
         shell: pwsh
         run: |
           dotnet build ClipBridge.csproj --configuration Release --nologo
+          if ($LASTEXITCODE -ne 0) { throw "Build or test command failed: $LASTEXITCODE" }
           dotnet build tools/UiSmokeTests/UiSmokeTests.csproj --configuration Release --nologo
+          if ($LASTEXITCODE -ne 0) { throw "Build or test command failed: $LASTEXITCODE" }
           dotnet build tools/UpdateSmokeTests/UpdateSmokeTests.csproj --configuration Release --nologo
+          if ($LASTEXITCODE -ne 0) { throw "Build or test command failed: $LASTEXITCODE" }
           dotnet run --project tools/TransferTests/TransferTests.csproj --configuration Release
+          if ($LASTEXITCODE -ne 0) { throw "Build or test command failed: $LASTEXITCODE" }
           python -m unittest discover -s tools -p 'test_publish_github.py'
       - name: Verify package layout and updater helper
         shell: pwsh

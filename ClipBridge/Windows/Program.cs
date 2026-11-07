@@ -28,6 +28,7 @@ internal static class Program
 			if (!createdNew)
 			{
 				eventWaitHandle.Set();
+                if (Array.IndexOf(args, "--updated") >= 0) Environment.ExitCode = SelfUpdate.ExistingInstanceExitCode;
 				return;
 			}
 			Marshal.ThrowExceptionForHR(SetCurrentProcessExplicitAppUserModelID("ClipBridge.Windows"));
