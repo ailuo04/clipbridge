@@ -215,11 +215,11 @@ internal sealed class ControlPanelForm : Form
 		get
 		{
 			CreateParams createParams = base.CreateParams;
-			createParams.ClassStyle |= 131072;
+			createParams.ClassStyle |= 0x00020000;
 			// Keep the native window styles so Windows owns window transitions.
 			// WM_NCCALCSIZE removes the frame while retaining those behaviors.
 			createParams.Style = (createParams.Style & ~WsPopup) | WsOverlappedWindow;
-			createParams.ExStyle |= 33554432;
+			createParams.ExStyle |= 0x02000000;
 			return createParams;
 		}
 	}

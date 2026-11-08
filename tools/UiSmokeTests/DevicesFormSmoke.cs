@@ -72,6 +72,17 @@ internal static class DevicesFormSmoke
         bitmap.Save(path, ImageFormat.Png);
         Console.WriteLine("SCREENSHOT " + path);
     }
+    private static void CaptureOverlay(Form form, string name)
+    {
+        string directory = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "clipbridge-ui-smoke");
+        System.IO.Directory.CreateDirectory(directory);
+        using var bitmap = new Bitmap(form.Width, form.Height);
+        using (Graphics graphics = Graphics.FromImage(bitmap))
+            graphics.CopyFromScreen(form.PointToScreen(Point.Empty), Point.Empty, form.Size, CopyPixelOperation.SourceCopy);
+        string path = System.IO.Path.Combine(directory, name + ".png");
+        bitmap.Save(path, ImageFormat.Png);
+        Console.WriteLine("SCREENSHOT " + path);
+    }
     internal static void Run(Assembly app, bool capture)
     {
         PairingQrPanelSmoke.Run(app, capture);
@@ -139,6 +150,8 @@ internal static class DevicesFormSmoke
                 Check(button.Left >= 0 && button.Right <= button.Parent!.ClientSize.Width, $"action fits its row: {button.Name}");
             if (capture && size.Width == 500) Capture(form, "devices-minimum");
         }
+        form.ClientSize = new Size(320, 240); Pump();
+        Check(form.ClientRectangle.Contains(Find(form, "DevicesCard").Bounds), "modal glass surface stays inside a compact owner window");
         form.ClientSize = initialClientSize; Pump();
         var viewport = (ScrollableControl)Find(form, "DevicesScroll");
         viewport.AutoScrollPosition = new Point(0, 160); Pump();
@@ -197,6 +210,50 @@ internal static class DevicesFormSmoke
         form.Close(); Pump();
         var remainingStatusHandlers = (Action<string>?)hubType.GetField("Status", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(hub);
         Check(remainingStatusHandlers == null || remainingStatusHandlers.GetInvocationList().All(handler => !ReferenceEquals(handler.Target, form)), "closing unsubscribes hub status notifications");
+
+        using (var owner = new Form { ClientSize = new Size(900, 720), StartPosition = FormStartPosition.CenterScreen, Text = "Device modal owner" })
+        using (var modal = (Form)Activator.CreateInstance(formType, hub)!)
+        using (var probe = new System.Windows.Forms.Timer { Interval = 30 })
+        {
+            string[]? modalFailures = null;
+            owner.Controls.Add(new Panel { BackColor = Color.FromArgb(226, 234, 244), Location = new Point(20, 30), Size = new Size(250, 620) });
+            owner.Controls.Add(new Panel { BackColor = Color.FromArgb(248, 250, 253), Location = new Point(290, 30), Size = new Size(580, 620) });
+            owner.Controls.Add(new Label { Text = "主界面背景 · 设备状态", Location = new Point(330, 80), AutoSize = true, Font = new Font("Microsoft YaHei UI", 18f, FontStyle.Bold), ForeColor = Color.FromArgb(41, 58, 80) });
+            owner.Show();
+            modal.Shown += (_, _) => probe.Start();
+            probe.Tick += (_, _) =>
+            {
+                probe.Stop();
+                var failures = new List<string>();
+                Rectangle ownerClient = owner.RectangleToScreen(owner.ClientRectangle);
+                if (!modal.Modal) failures.Add("device window is modal");
+                if (modal.Bounds != ownerClient) failures.Add("device overlay covers the owner client area");
+                if (!ReferenceEquals(modal.Owner, owner)) failures.Add("modal dialog is owned by the main window");
+                Control backdrop = modal.Controls.Find("DevicesBackdrop", true).SingleOrDefault()!;
+                Control card = modal.Controls.Find("DevicesCard", true).SingleOrDefault()!;
+                Control workspace = modal.Controls.Find("DevicesWorkspace", true).SingleOrDefault()!;
+                Control scrollSurface = modal.Controls.Find("DevicesScroll", true).SingleOrDefault()!;
+                if (backdrop == null || !backdrop.Visible) failures.Add("modal backdrop is visible");
+                if (card == null || Math.Abs(card.Left + card.Width / 2 - modal.ClientSize.Width / 2) > 2 || Math.Abs(card.Top + card.Height / 2 - modal.ClientSize.Height / 2) > 2)
+                    failures.Add("device content surface is centered");
+                if (workspace.BackColor != Color.Transparent || scrollSurface.BackColor != Color.Transparent)
+                    failures.Add("device content groups reveal the frosted glass base");
+                if (backdrop != null && (int)backdrop.GetType().GetProperty("Builds", BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.Public)!.GetValue(backdrop)! != 1)
+                    failures.Add("modal backdrop is captured once");
+                if (capture) CaptureOverlay(modal, "devices-modal-overlay");
+                modalFailures = failures.ToArray();
+                modal.Close();
+            };
+            modal.ShowDialog(owner);
+            Pump();
+            Check(modalFailures != null && modalFailures.Length == 0, "device pairing opens as a centered modal overlay with a blurred backdrop" + (modalFailures is { Length: > 0 } ? ": " + string.Join(", ", modalFailures) : ""));
+            Check(owner.Enabled, "closing the device modal restores owner input");
+            var modalTimer = (System.Windows.Forms.Timer)formType.GetField("_timer", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(modal)!;
+            Action<string>? postModalStatus = (Action<string>?)hubType.GetField("Status", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(hub);
+            bool remainsSubscribed = postModalStatus?.GetInvocationList().Any(handler => ReferenceEquals(handler.Target, modal)) == true;
+            Check(!modalTimer.Enabled && !remainsSubscribed, "closing the device modal stops discovery polling and unsubscribes hub status");
+            owner.Close();
+        }
         Console.WriteLine("DEVICE WINDOW TESTS PASSED");
     }
 }

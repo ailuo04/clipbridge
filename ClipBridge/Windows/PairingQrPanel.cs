@@ -46,7 +46,8 @@ internal sealed class PairingQrPanel : Panel
         _getAddresses = getAddresses ?? ReadAddresses;
         Name = "InlinePairingQr";
         Margin = Padding.Empty;
-        SetStyle(ControlStyles.OptimizedDoubleBuffer | ControlStyles.ResizeRedraw, true);
+        SetStyle(ControlStyles.OptimizedDoubleBuffer | ControlStyles.ResizeRedraw | ControlStyles.AllPaintingInWmPaint, true);
+        DoubleBuffered = true;
         _title = Label("用手机扫码配对", 12f, FontStyle.Bold);
         _instructions = Label("手机和电脑连接同一 Wi-Fi，\n在手机互传中点击“扫码配对”。", 9f);
         _addressLabel = Label("电脑网络地址", 8.3f);
