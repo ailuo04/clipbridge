@@ -12,6 +12,10 @@ internal sealed class DevicesForm : Form
 {
     private readonly DeviceHub _hub;
     private readonly PairingQrPanel _pairingQr;
+    private readonly ModalBackdropSurface _backdrop = new() { Name = "DevicesBackdrop", AccessibleName = "设备窗口背景" };
+    private readonly RoundedSurface _card = new() { Name = "DevicesCard", CornerRadius = 18, Padding = Padding.Empty };
+    private readonly Panel _workspace = new() { Name = "DevicesWorkspace", Dock = DockStyle.Fill, BackColor = Color.Transparent };
+    private readonly Timer _ownerResizeTimer = new() { Interval = 140 };
     private DateTimeOffset _nextAddressRefresh;
     private readonly AppHeaderSurface _header = new() { Dock = DockStyle.Top, Height = 96, Padding = new Padding(24, 18, 24, 18) };
     private readonly Panel _rows = new()
@@ -50,11 +54,15 @@ internal sealed class DevicesForm : Form
         _pairingQr = new PairingQrPanel(hub.DeviceId) { Dock = DockStyle.Fill };
         AutoScaleDimensions = new SizeF(96, 96);
         AutoScaleMode = AutoScaleMode.Dpi;
+        Name = "DevicesForm";
         Text = "ClipBridge · 设备与配对";
         Icon = AppIcon.Load();
+        FormBorderStyle = FormBorderStyle.None;
+        ShowInTaskbar = false;
+        StartPosition = FormStartPosition.Manual;
         ClientSize = new Size(640, 640);
-        MinimumSize = new Size(500, 500);
-        StartPosition = FormStartPosition.CenterParent;
+        MinimumSize = Size.Empty;
+        BackColor = Color.Black;
         Font = OwnedFont(9.5f);
         DoubleBuffered = true;
         _status.Font = OwnedFont(8.5f);
@@ -70,11 +78,14 @@ internal sealed class DevicesForm : Form
         BuildConnectionCard();
         _content.Controls.AddRange(new Control[] { _requests, _connectCard, _trusted, _nearby });
         _rows.Controls.Add(_content);
-        var workspace = new Panel { Name = "DevicesWorkspace", Dock = DockStyle.Fill };
-        workspace.Controls.Add(_rows);
-        workspace.Controls.Add(_footer);
-        workspace.Controls.Add(_header);
-        Controls.Add(workspace);
+        _workspace.Controls.Add(_rows);
+        _workspace.Controls.Add(_footer);
+        _workspace.Controls.Add(_header);
+        _card.Controls.Add(_workspace);
+        _backdrop.Controls.Add(_card);
+        Controls.Add(_backdrop);
+        _backdrop.SendToBack();
+        _card.BringToFront();
         _rows.ClientSizeChanged += (_, _) => LayoutRows();
         _timer.Tick += (_, _) =>
         {
@@ -84,10 +95,105 @@ internal sealed class DevicesForm : Form
             RefreshRows();
         };
         _hub.Status += OnHubStatus;
-        Shown += (_, _) => { _hub.RefreshDiscovery(); RefreshQrAddresses(); RefreshRows(); _timer.Start(); };
+        Resize += (_, _) => LayoutOverlay();
+        DpiChanged += (_, _) => LayoutOverlay();
+        _ownerResizeTimer.Tick += (_, _) => { _ownerResizeTimer.Stop(); if (!IsDisposed) CaptureOwner(); };
+        Shown += (_, _) => { PositionOverOwner(); LayoutOverlay(); CaptureOwner(); _hub.RefreshDiscovery(); RefreshQrAddresses(); RefreshRows(); _timer.Start(); };
         ApplyTheme();
         AutoScaleDimensions = new SizeF(96, 96);
         ResumeLayout(true);
+    }
+
+    protected override CreateParams CreateParams
+    {
+        get
+        {
+            CreateParams parameters = base.CreateParams;
+            // Paint the whole window as one composited surface: child windows
+            // cannot flash white at the frame during a 120 Hz resize.
+            parameters.ClassStyle |= 0x00020000;
+            parameters.ExStyle |= 0x02000000;
+            return parameters;
+        }
+    }
+
+    protected override void OnResizeBegin(EventArgs e)
+    {
+        // The composited window already paints as one surface; suspending the
+        // whole form would let the last frame spill outside and look stale.
+        base.OnResizeBegin(e);
+        LayoutRows();
+    }
+
+    protected override void OnResizeEnd(EventArgs e)
+    {
+        base.OnResizeEnd(e);
+        LayoutRows();
+    }
+
+    protected override void OnHandleCreated(EventArgs e)
+    {
+        base.OnHandleCreated(e);
+        PositionOverOwner();
+        LayoutOverlay();
+    }
+
+    protected override void OnShown(EventArgs e)
+    {
+        base.OnShown(e);
+        if (Owner != null)
+        {
+            Owner.Move += OwnerMoved;
+            Owner.Resize += OwnerResized;
+        }
+        PositionOverOwner();
+        LayoutOverlay();
+    }
+
+    private void PositionOverOwner()
+    {
+        if (Owner == null || Owner.IsDisposed) return;
+        Rectangle ownerBounds = Owner.RectangleToScreen(Owner.ClientRectangle);
+        if (Bounds != ownerBounds) Bounds = ownerBounds;
+    }
+
+    private void LayoutOverlay()
+    {
+        if (ClientSize.Width < 40 || ClientSize.Height < 40) return;
+        _backdrop.Bounds = ClientRectangle;
+        int margin = Pixels(24);
+        int width = Math.Min(Pixels(640), Math.Max(1, ClientSize.Width - margin * 2));
+        int height = Math.Min(Pixels(640), Math.Max(1, ClientSize.Height - margin * 2));
+        _card.Bounds = new Rectangle((ClientSize.Width - width) / 2, (ClientSize.Height - height) / 2, width, height);
+        _card.Padding = new Padding(Pixels(8));
+        _card.CornerRadius = Pixels(18);
+        _card.FillColor = Color.FromArgb(Ui.HeaderIsDark ? 198 : 178, Ui.Surface);
+        _card.BorderColor = Color.FromArgb(Ui.HeaderIsDark ? 150 : 190, Ui.Line);
+        _backdrop.SendToBack();
+        _card.BringToFront();
+        _card.Invalidate();
+    }
+
+    private void CaptureOwner() => _backdrop.CaptureOwner(Owner);
+
+    private void OwnerMoved(object? sender, EventArgs e) => PositionOverOwner();
+
+    private void OwnerResized(object? sender, EventArgs e)
+    {
+        PositionOverOwner();
+        LayoutOverlay();
+        _ownerResizeTimer.Stop();
+        _ownerResizeTimer.Start();
+    }
+
+    protected override bool ProcessCmdKey(ref Message msg, Keys keyData)
+    {
+        if (keyData == Keys.Escape)
+        {
+            Close();
+            return true;
+        }
+        return base.ProcessCmdKey(ref msg, keyData);
     }
 
     private Font OwnedFont(float size, FontStyle style = FontStyle.Regular)
@@ -130,11 +236,12 @@ internal sealed class DevicesForm : Form
 
     private void BuildHeader()
     {
-        var layout = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 3, RowCount = 1, Margin = Padding.Empty };
+        var layout = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 4, RowCount = 1, Margin = Padding.Empty };
         layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
         layout.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 52));
         layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         layout.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 124));
+        layout.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 42));
         var tile = new IconTile { Glyph = "", Anchor = AnchorStyles.Left, Margin = Padding.Empty };
         var title = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 2, Margin = Padding.Empty };
         title.RowStyles.Add(new RowStyle(SizeType.Percent, 58));
@@ -148,9 +255,12 @@ internal sealed class DevicesForm : Form
             SetStatus("正在搜索附近设备，请保持两台设备连接同一 Wi-Fi 或热点");
         }, glyph: "");
         _tips.SetToolTip(search, "切换网络后可立即重新搜索，正在进行的传输会继续。");
+        var close = new WindowCaptionButton { Name = "DevicesCloseButton", Glyph = "", CloseAction = true, AccessibleName = "关闭设备与配对" };
+        close.Click += (_, _) => Close();
         layout.Controls.Add(tile, 0, 0);
         layout.Controls.Add(title, 1, 0);
         layout.Controls.Add(search, 2, 0);
+        layout.Controls.Add(close, 3, 0);
         _header.Controls.Add(layout);
     }
 
@@ -492,9 +602,20 @@ internal sealed class DevicesForm : Form
             foreach (Control child in control.Controls) Recolor(child, childBackground);
             control.Invalidate();
         }
-        foreach (Control control in Controls) Recolor(control, Ui.Canvas);
+        Recolor(_workspace, Ui.Canvas);
         Recolor(_header, Ui.Header);
         Recolor(_footer, Ui.Surface);
+        _workspace.BackColor = Color.Transparent;
+        _rows.BackColor = Color.Transparent;
+        _content.BackColor = Color.Transparent;
+        _requests.BackColor = Color.Transparent;
+        _trusted.BackColor = Color.Transparent;
+        _nearby.BackColor = Color.Transparent;
+        _card.FillColor = Color.FromArgb(Ui.HeaderIsDark ? 198 : 178, Ui.Surface);
+        _card.BorderColor = Color.FromArgb(Ui.HeaderIsDark ? 150 : 190, Ui.Line);
+        _backdrop.Invalidate();
+        LayoutOverlay();
+        if (Visible) CaptureOwner();
         LayoutRows();
     }
 
@@ -503,10 +624,25 @@ internal sealed class DevicesForm : Form
         if (disposing)
         {
             _timer.Dispose();
+            _ownerResizeTimer.Dispose();
             _hub.Status -= OnHubStatus;
             _tips.Dispose();
+            _backdrop.Release();
         }
         base.Dispose(disposing);
         if (disposing) foreach (var font in _fonts) font.Dispose();
+    }
+
+    protected override void OnFormClosed(FormClosedEventArgs e)
+    {
+        _timer.Stop();
+        _ownerResizeTimer.Stop();
+        _hub.Status -= OnHubStatus;
+        if (Owner != null)
+        {
+            Owner.Move -= OwnerMoved;
+            Owner.Resize -= OwnerResized;
+        }
+        base.OnFormClosed(e);
     }
 }

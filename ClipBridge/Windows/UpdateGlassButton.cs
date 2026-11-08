@@ -15,11 +15,16 @@ internal sealed class UpdateGlassButton : Button
     public UpdateGlassButton(string text, bool primary = false, bool close = false)
     {
         _primary = primary; _close = close;
-        Text = text; Font = Ui.Font(10, primary ? FontStyle.Bold : FontStyle.Regular);
+        Text = text; Font = Ui.Font(9.1f, primary ? FontStyle.Bold : FontStyle.Regular);
         AutoSize = false; FlatStyle = FlatStyle.Flat; FlatAppearance.BorderSize = 0;
         BackColor = Color.Transparent; UseVisualStyleBackColor = false; Cursor = Cursors.Hand;
         SetStyle(ControlStyles.UserPaint | ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer | ControlStyles.ResizeRedraw | ControlStyles.SupportsTransparentBackColor, true);
         _timer.Tick += (_, _) => { _hover = VisualDrawing.MoveTowards(_hover, _over ? 1 : 0, 0.15); Invalidate(); if (_hover == (_over ? 1 : 0)) _timer.Stop(); };
+    }
+    internal void ApplyTheme()
+    {
+        Font = Ui.Font(9.1f, _primary ? FontStyle.Bold : FontStyle.Regular);
+        Invalidate();
     }
     protected override void OnPaint(PaintEventArgs e)
     {

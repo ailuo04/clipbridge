@@ -520,8 +520,11 @@ private ControlPanelForm CreatePanel(string pairingKey, bool emitStartupEvent = 
 
 	private void OpenDevices()
     {
-        if (_devicesForm == null || _devicesForm.IsDisposed) _devicesForm = new DevicesForm(_devices);
-        _devicesForm.Show(_panel); _devicesForm.Activate();
+        if (_devicesForm is { IsDisposed: false, Visible: true }) { _devicesForm.Activate(); return; }
+        using var dialog = new DevicesForm(_devices);
+        _devicesForm = dialog;
+        dialog.FormClosed += (_, _) => { if (ReferenceEquals(_devicesForm, dialog)) _devicesForm = null; };
+        dialog.ShowDialog(_panel);
     }
 
 	private void CopyPairingKey()
