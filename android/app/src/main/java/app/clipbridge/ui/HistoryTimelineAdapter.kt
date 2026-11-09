@@ -18,7 +18,7 @@ class HistoryTimelineAdapter(
     private var entries: List<HistoryLocalRecord> = emptyList()
 
     fun submit(values: List<HistoryLocalRecord>) {
-        entries = values
+        entries = UiPresentation.conversationOrder(values)
         notifyDataSetChanged()
     }
 

@@ -102,6 +102,25 @@ internal static class Program
         finally { Directory.Delete(dir, true); }
     }
 
+    static void ReceiveBenchmark()
+    {
+        string directory=Path.Combine(Path.GetTempPath(),"clipbridge-benchmark-"+Guid.NewGuid().ToString("N"));
+        byte[] data=RandomNumberGenerator.GetBytes(TransferProtocol.ChunkSize);
+        const int chunks=1024;
+        using var hash=IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
+        for(int i=0;i<chunks;i++) hash.AppendData(data);
+        var file=new TransferFile("original-video.mp4",(long)data.Length*chunks,Convert.ToHexString(hash.GetHashAndReset()));
+        try {
+            var watch=System.Diagnostics.Stopwatch.StartNew();
+            using var store=new ReceiveFileStore(directory,new[]{file});
+            for(int i=0;i<chunks;i++) store.Append(0,(long)i*data.Length,data);
+            var saved=store.Commit(); watch.Stop();
+            using var received=File.OpenRead(saved.Single());
+            Check(Convert.ToHexString(SHA256.HashData(received))==file.Sha256,"large media payload is byte-for-byte identical");
+            Console.WriteLine($"RECEIVE BENCHMARK 64 MiB including SHA-256: {watch.Elapsed.TotalMilliseconds:0} ms, {64/watch.Elapsed.TotalSeconds:0.0} MiB/s (local disk, not network)");
+        } finally { if(Directory.Exists(directory)) Directory.Delete(directory,true); }
+    }
+
     static async Task<int> Main(string[] args)
     {
         try { await RunAsync(args); return 0; }
@@ -110,6 +129,9 @@ internal static class Program
 
     static async Task RunAsync(string[] args)
     {
+        if(args.Length==2 && args[0]=="--folder-interop") { await FolderTests.InteropAsync(args[1]); return; }
+        if(args.Length==1 && args[0]=="--folders") { await FolderTests.RunAsync(); return; }
+        if(args.Length==1 && args[0]=="--benchmark-receive") { ReceiveBenchmark(); return; }
         if (args.Length == 2 && args[0] == "--write-qr")
         {
             string invitation = PairingInvitationCodec.Format("0123456789abcdef0123456789abcdef", IPAddress.Parse("10.51.2.197"));
@@ -119,6 +141,7 @@ internal static class Program
         if (args.Length == 1 && args[0] == "--malformed") { await ExperienceTests.MalformedDiscoveryAsync(); return; }
         if (args.Length == 1 && args[0] == "--wake") { await DiscoveryWakeTests.RunAsync(); return; }
         if (args.Length == 1 && args[0] == "--invitation") { PairingInvitationTests.Run(); return; }
+        if (args.Length == 1 && args[0] == "--clipboard") { await ClipboardSyncTests.RunAsync(); return; }
         if (args.Length == 1 && args[0] == "--history") { HistoryTests.Run(); return; }
         if (args.Length == 1 && args[0] == "--pair-security") { await ExperienceTests.SessionCollisionAsync(); return; }
         if (args.Length == 2 && args[0] == "--experience-interop") { await ExperienceInterop.RunAsync(args[1]); return; }

@@ -82,7 +82,7 @@ internal sealed class ControlPanelForm : Form
 	// 18 px top and 24 px bottom padding, in 96-dpi logical pixels.
 	private const int NetworkSurfaceHeight = 314;
 
-	private readonly ModernButton _sendClipboard = new ModernButton("发送剪贴板", ButtonTone.Primary, "\ue8c8");
+	private readonly ModernButton _sendClipboard = new ModernButton("发消息", ButtonTone.Primary, "\ue8c8");
 
 	private readonly ModernButton _sendFiles = new ModernButton("发送文件", ButtonTone.Secondary, "\ue8b7");
 
@@ -142,7 +142,7 @@ internal sealed class ControlPanelForm : Form
 
 	private readonly ThemeSelector _themeSelector = new ThemeSelector();
 
-	private readonly Label _status = TextLabel("就绪 · 主动发送模式", 9f, bold: false, Ui.Muted);
+	private readonly Label _status = TextLabel("就绪 · 手动同步模式", 9f, bold: false, Ui.Muted);
 
 	private readonly ListBox _events = new ListBox();
 
@@ -232,6 +232,7 @@ internal sealed class ControlPanelForm : Form
 
 	private readonly ModernButton _pairDevices = new ModernButton("附近设备与配对", ButtonTone.Primary);
     public event Action? ManageDevicesRequested;
+	public PeerSnapshot? SelectedPeer => _devices.SelectedPeer;
     public void SetPairingCount(int count) { _pairDevices.Text = count > 0 ? $"设备配对 · {count} 项待确认" : "附近设备与配对"; }
 
 	public event Action? CopyKeyRequested;
@@ -287,7 +288,7 @@ internal sealed class ControlPanelForm : Form
 		RefreshNetworkAddresses();
 		if (emitStartupEvent)
 		{
-			AddEvent("应用已启动，只有点击发送才会传输剪贴板");
+			AddEvent("应用已启动；自动剪贴板同步默认关闭，可按设备开启");
 		}
 		CreateNestedHandles(this);
 		SubscribeNetworkChanges();
@@ -296,8 +297,8 @@ internal sealed class ControlPanelForm : Form
 
 	private void ConfigureControls(string pairingKey)
 	{
-        _sendClipboard.Name = "SendClipboardButton";
-        _sendClipboard.AccessibleName = "发送剪贴板";
+        _sendClipboard.Name = "OpenConversationButton";
+        _sendClipboard.AccessibleName = "发消息";
         _sendFiles.Name = "SendFilesButton";
         _sendFiles.AccessibleName = "发送文件";
         _sendClipboard.Margin = new Padding(0, 0, 8, 0);
@@ -369,7 +370,7 @@ internal sealed class ControlPanelForm : Form
 		};
 		_tips.SetToolTip(_copyKey, "复制配对密钥");
 		_tips.SetToolTip(_keyShell, "仅与可信设备共享");
-		_tips.SetToolTip(_sendClipboard, "预览后向指定设备发送当前文字");
+		_tips.SetToolTip(_sendClipboard, "打开会话，粘贴文字或图片后发送");
 		_tips.SetToolTip(_addresses, "本机可用的 IPv4 局域网地址");
 		_tips.SetToolTip(_refresh, "重新读取网络地址并刷新设备");
 		_tips.SetToolTip(_remove, "移除选中的手动地址");
@@ -830,7 +831,7 @@ internal sealed class ControlPanelForm : Form
 		_devices.Name = "DeviceList";
 		_devices.Dock = DockStyle.Fill;
 		_devices.Visible = false;
-		_devices.SelectedPeerChanged += (object? _, EventArgs _) => UpdateRemoveState();
+		_devices.SelectedPeerChanged += (object? _, EventArgs _) => { UpdateRemoveState(); };
 	}
 
 	private void ConfigureEvents()
@@ -1233,7 +1234,7 @@ internal sealed class ControlPanelForm : Form
 			_events.EndUpdate();
 		}
 		_lastEvent = ((events.Count > 0) ? events[0].Message : string.Empty);
-		_status.Text = (string.IsNullOrEmpty(_lastEvent) ? "就绪 · 主动发送模式" : _lastEvent);
+		_status.Text = (string.IsNullOrEmpty(_lastEvent) ? "就绪 · 手动同步模式" : _lastEvent);
 		_events.Invalidate();
 	}
 

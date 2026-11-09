@@ -14,10 +14,16 @@ internal sealed record HistorySyncEvent(
     [property: JsonPropertyName("files")] HistoryFileMetadata[] Files,
     [property: JsonPropertyName("state")] string State);
 
+[method: JsonConstructor]
 internal sealed record HistoryFileMetadata(
     [property: JsonPropertyName("name")] string Name,
     [property: JsonPropertyName("size")] long Size,
-    [property: JsonPropertyName("sha256")] string Sha256);
+    [property: JsonPropertyName("sha256")] string Sha256,
+    [property: JsonPropertyName("relativePath"), JsonIgnore(Condition=JsonIgnoreCondition.WhenWritingNull)] string? RelativePath = null,
+    [property: JsonPropertyName("isDirectory"), JsonIgnore(Condition=JsonIgnoreCondition.WhenWritingDefault)] bool IsDirectory = false)
+{
+    public HistoryFileMetadata(string name,long size,string sha256):this(name,size,sha256,null,false) {}
+}
 
 internal sealed record HistoryTombstone(
     [property: JsonPropertyName("eventId")] string EventId,

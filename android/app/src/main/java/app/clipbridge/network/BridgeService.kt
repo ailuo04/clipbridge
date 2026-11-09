@@ -11,6 +11,8 @@ import android.net.ConnectivityManager
 import android.net.LinkProperties
 import android.net.Network
 import android.net.wifi.WifiManager
+import android.os.Handler
+import android.os.Looper
 import android.os.IBinder
 import android.util.Log
 import app.clipbridge.MainActivity
@@ -32,11 +34,16 @@ class BridgeService : Service() {
     @Volatile var hub: DeviceHub?=null; private set
     @Volatile var status="正在搜索设备…"; private set
     @Volatile var receivedText: String?=null; private set
+    val clipboardSyncState=ClipboardSyncState()
+    @Volatile var clipboardReadRequested: ((String)->ClipboardReadResult)?=null
+    private val seenClipboardRequests=ConcurrentHashMap<String,Long>()
     @Volatile var historyRevision: Long=0; private set
     private val workers=Executors.newCachedThreadPool()
+    private val mainHandler=Handler(Looper.getMainLooper())
     @Volatile private var historyPruner: ScheduledExecutorService?=null
     private val running=AtomicBoolean(false)
-    private val sending=AtomicBoolean(false)
+    private val sendingPeers=ConcurrentHashMap.newKeySet<String>()
+    fun hasActiveTransfers()=sendingPeers.isNotEmpty() || (::files.isInitialized && files.hasActiveTransfers())
     private val slots=Semaphore(4)
     private val sockets=ConcurrentHashMap.newKeySet<Socket>()
     private val socketPeers=ConcurrentHashMap<Socket,String>()
@@ -83,7 +90,7 @@ class BridgeService : Service() {
             runCatching { watchNetworkChanges() }
             files=FileTransfers(this,pairing,store.deviceId(),{ p ->
                 transfers[p.id]=p
-                if(transfers.size>200) transfers.entries.firstOrNull { it.value.state !in listOf("传输中","准备文件","等待对方接受") && !pending.containsKey(it.key) }?.let { transfers.remove(it.key) }
+                if(transfers.size>200) transfers.entries.firstOrNull { it.value.state !in listOf("传输中","准备文件","连接接收设备") && !pending.containsKey(it.key) }?.let { transfers.remove(it.key) }
             },{ p -> pending[p.offer.id]=p; setStatus("有文件待接收，请主动打开互传处理") },{ id -> pending.remove(id) },hub,{ history })
             hub?.revoked={ id -> socketPeers.filterValues { it==id }.keys.forEach { runCatching { it.close() } }; files.revoke(id) }
             workers.execute { acceptLoop(textListener!!,false) }; workers.execute { acceptLoop(fileListener!!,true) }
@@ -134,6 +141,23 @@ class BridgeService : Service() {
             val route=hub!!.incoming(socket,1,textKey); route.source?.let { socketPeers[socket]=it }
             val payload=BridgeProtocol.read(route.input,route.key)
             val value=JSONObject(payload.toString(Charsets.UTF_8))
+            if(value.optString("Type")=="clipboardRequest") {
+                val source=route.source ?: return
+                require(hub?.isTrusted(source)==true && store.records().any { it.id==source && it.active })
+                val requestId=ClipboardSyncProtocol.readRequest(value,source,store.deviceId())
+                seenClipboardRequests.entries.removeIf { System.currentTimeMillis()-it.value>600000 }
+                require(seenClipboardRequests.size<2048 && seenClipboardRequests.putIfAbsent(requestId,System.currentTimeMillis())==null)
+                socket.soTimeout=12000
+                val answer=CompletableFuture<ClipboardReadResult>()
+                mainHandler.post { try { answer.complete(clipboardReadRequested?.invoke(source) ?: ClipboardReadResult("foreground")) } catch(_:Exception) { answer.complete(ClipboardReadResult("error")) } }
+                val result=runCatching { answer.get(5,TimeUnit.SECONDS) }.getOrDefault(ClipboardReadResult("foreground"))
+                val valid=result.status in setOf("ok","empty","foreground","disabled","error")
+                val safe=if(!valid || result.status=="ok" && (result.text.isEmpty() || result.text.toByteArray().size>BridgeProtocol.MAX_TEXT || isSecret(result.text)) || result.status!="ok" && result.text.isNotEmpty()) ClipboardReadResult("error") else result
+                val responseUtc=System.currentTimeMillis()
+                if(safe.status=="ok") recordTextHistory(source,requestId,store.deviceId(),responseUtc,safe.text)
+                BridgeProtocol.writeJson(socket.getOutputStream(),route.key,ClipboardSyncProtocol.response(requestId,store.deviceId(),safe,responseUtc))
+                return
+            }
             if(value.optString("type").startsWith("historySync")) {
                 val source=route.source ?: return
                 if(hub?.isTrusted(source)!=true) return
@@ -151,9 +175,8 @@ class BridgeService : Service() {
             require(seenText.size<2048 && seenText.putIfAbsent(id,System.currentTimeMillis())==null)
             val historySaved=route.source?.takeIf { hub?.isTrusted(it)==true }?.let { peerId -> recordTextHistory(peerId,id,origin,timestampUtc,text) } ?: true
             receivedText=text
-            val clipboardWritten=try { getSystemService(ClipboardManager::class.java).setPrimaryClip(ClipData.newPlainText("ClipBridge",text)); true }
-                catch(_: Exception) { false }
-            setStatus(composeTextReceiveStatus(clipboardWritten,historySaved))
+            clipboardSyncState.suppressIncoming(text)
+            setStatus(if(historySaved) "收到新消息，可在会话中查看或复制" else "收到消息（历史记录保存失败）")
         } catch(_: Exception) { setStatus("一条文字未能接收，请检查配对和网络") }
     }
     fun localDeviceId(): String = store.deviceId()
@@ -227,16 +250,50 @@ class BridgeService : Service() {
         HistorySyncProtocol.decode(BridgeProtocol.read(socket.getInputStream(),key),authenticatedPeerId,System.currentTimeMillis())
 
     private fun isSecret(text: String): Boolean = listOfNotNull(pairing).plus(store.records().map { it.key }).any { text.trim().equals(BridgeProtocol.hex(it),true) }
-    fun sendText(host: String,text: String) {
-        require(BridgeProtocol.isLocal(host) && text.isNotEmpty() && text.toByteArray().size<=BridgeProtocol.MAX_TEXT) { "文字或目标地址无效" }
-        require(!isSecret(text)) { "不能发送配对密钥" }; check(sending.compareAndSet(false,true)) { "已有发送任务，请稍后重试" }
+    fun enableClipboardSync(peerId:String) = clipboardSyncState.enable(peerId)
+    fun disableClipboardSync() = clipboardSyncState.disable()
+    fun syncAutomaticClipboard(peerId:String,host:String,text:String):Boolean {
+        if(clipboardSyncState.targetPeerId!=peerId || isSecret(text) || !clipboardSyncState.shouldSend(text)) return false
+        return try { sendText(host,text); true }
+        catch(e:Exception) { setStatus("自动同步暂未发送，请稍后重试"); false }
+    }
+    fun syncClipboard(host:String,peerId:String,complete:(ClipboardReadResult)->Unit) {
+        require(BridgeProtocol.isLocal(host) && peerId.length==32 && hub?.isTrusted(peerId)==true) { "请选择已配对的在线设备" }
         workers.execute {
+            val result=try {
+                Socket().use { socket ->
+                    sockets.add(socket)
+                    try {
+                        socket.connect(InetSocketAddress(host,BridgeProtocol.TEXT_PORT),5000); socket.soTimeout=12000
+                        val route=hub?.outgoingRoute(socket,1,textKey) ?: error("连接服务尚未准备好")
+                        require(route.peerId==peerId) { "目标设备身份已变化，请重新选择" }
+                        val requestId=UUID.randomUUID().toString().replace("-","")
+                        BridgeProtocol.writeJson(socket.getOutputStream(),route.key,ClipboardSyncProtocol.request(requestId,store.deviceId(),peerId,System.currentTimeMillis()))
+                        ClipboardSyncProtocol.readResponse(JSONObject(BridgeProtocol.read(socket.getInputStream(),route.key,BridgeProtocol.MAX_TEXT+4096).toString(Charsets.UTF_8)),requestId,peerId)
+                    } finally { sockets.remove(socket); socketPeers.remove(socket) }
+                }
+            } catch(e:Exception) { Log.w("ClipBridge","Clipboard sync failed",e); ClipboardReadResult("error") }
+            complete(result)
+        }
+    }
+    fun recordClipboardSync(peerId:String,result:ClipboardReadResult):Boolean {
+        if(result.status!="ok" || result.text.isBlank()) return false
+        val eventId=if(result.messageId.isNotBlank()) result.messageId else UUID.randomUUID().toString().replace("-","")
+        val createdUtc=if(result.timestampUtc>0) result.timestampUtc else System.currentTimeMillis()
+        return recordTextHistory(peerId,eventId,peerId,createdUtc,result.text)
+    }
+    fun sendText(host: String,text: String,expectedPeerId:String?=null,complete:(Boolean)->Unit = {}) {
+        require(BridgeProtocol.isLocal(host) && text.isNotEmpty() && text.toByteArray().size<=BridgeProtocol.MAX_TEXT) { "文字或目标地址无效" }
+        require(!isSecret(text)) { "不能发送配对密钥" }; val sendPeer=expectedPeerId ?: host;check(sendingPeers.add(sendPeer)) { "此设备已有发送任务，请稍后重试" }
+        workers.execute {
+            var success=false
             try {
                 var sentRecord: Triple<String,String,Long>? = null
                 Socket().use { socket -> sockets.add(socket)
                     try {
                         socket.connect(InetSocketAddress(host,BridgeProtocol.TEXT_PORT),5000); socket.soTimeout=5000
                         val route=hub!!.outgoingRoute(socket,1,textKey)
+                        require(expectedPeerId==null || route.peerId==expectedPeerId) { "目标设备已变化" }
                         route.peerId?.let { socketPeers[socket]=it }
                         val messageId=UUID.randomUUID().toString().replace("-","")
                         val timestampUtc=System.currentTimeMillis()
@@ -246,12 +303,13 @@ class BridgeService : Service() {
                         if(route.peerId!=null) sentRecord=Triple(route.peerId,messageId,timestampUtc)
                     } finally { sockets.remove(socket); socketPeers.remove(socket) }
                 }
-                setStatus("文字已发送，请在目标设备确认")
+                setStatus("消息已发送")
                 sentRecord?.let { (peerId,messageId,timestampUtc) ->
                     if(!recordTextHistory(peerId,messageId,store.deviceId(),timestampUtc,text)) Log.w("ClipBridge", "Text send completed but history was not saved")
                 }
+                success=true
             } catch(_: Exception) { setStatus("文字发送失败，请检查设备、配对和网络") }
-            finally { sending.set(false) }
+            finally { sendingPeers.remove(sendPeer); mainHandler.post { complete(success) } }
         }
     }
     private fun recordTextHistory(peerId: String,eventId: String,senderDeviceId: String,createdUtc: Long,text: String): Boolean = try {
@@ -260,9 +318,9 @@ class BridgeService : Service() {
         true
     } catch(e: Exception) { Log.w("ClipBridge", "Text history save failed", e); false }
 
-    fun sendFiles(host: String,uris: List<Uri>) {
-        require(BridgeProtocol.isLocal(host)) { "请选择目标设备" }; check(::files.isInitialized && sending.compareAndSet(false,true)) { "服务准备中或已有发送任务" }
-        workers.execute { try { files.send(host,uris) } finally { sending.set(false) } }
+    fun sendFiles(host: String,uris: List<Uri>,expectedPeerId:String?=null,complete:(Boolean)->Unit = {}) {
+        require(BridgeProtocol.isLocal(host)) { "请选择目标设备" }; val sendPeer=expectedPeerId ?: host;check(::files.isInitialized && sendingPeers.add(sendPeer)) { "服务准备中或此设备已有发送任务" }
+        workers.execute { var success=false; try { success=files.send(host,uris,expectedPeerId) } finally { sendingPeers.remove(sendPeer); mainHandler.post { complete(success) } } }
     }
     fun receivedFiles(id: String): List<Uri> = if(::files.isInitialized) files.received[id] ?: emptyList() else emptyList()
     fun cancel(id: String) { pending[id]?.decision?.complete(false); if(::files.isInitialized) files.cancel(id) }
@@ -273,7 +331,7 @@ class BridgeService : Service() {
         sockets.forEach { runCatching { it.close() } }; sockets.clear(); if(::files.isInitialized) files.stop()
         pending.values.forEach { it.decision.complete(false) }; pending.clear(); runCatching { multicast?.takeIf { it.isHeld }?.release() }
     }
-    override fun onDestroy() { running.set(false); stopHistoryPruner(); closeNetwork(); workers.shutdownNow(); if(current===this) current=null; super.onDestroy() }
+    override fun onDestroy() { running.set(false); clipboardReadRequested=null; disableClipboardSync(); stopHistoryPruner(); closeNetwork(); workers.shutdownNow(); if(current===this) current=null; super.onDestroy() }
 }
 
 internal fun composeTextReceiveStatus(clipboardWritten: Boolean,historySaved: Boolean): String {

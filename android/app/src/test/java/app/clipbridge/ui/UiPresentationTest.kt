@@ -17,7 +17,7 @@ class UiPresentationTest {
         assertEquals(25, UiPresentation.percent(1024L * 1024 * 1024, 4L * 1024 * 1024 * 1024))
     }
     @Test fun activeTransfersAreSeparateFromResults() {
-        for (state in listOf("准备文件", "等待对方接受", "传输中")) assertEquals("active", UiPresentation.transferGroup(state))
+        for (state in listOf("准备文件", "连接接收设备", "传输中")) assertEquals("active", UiPresentation.transferGroup(state))
         assertEquals("waiting", UiPresentation.transferGroup("待接受"))
         assertEquals("finished", UiPresentation.transferGroup("对方已保存并校验"))
         assertEquals("finished", UiPresentation.transferGroup("已保存到 Download/ClipBridge"))
@@ -60,9 +60,18 @@ class UiPresentationTest {
         assertEquals("1.0 MB", UiPresentation.size(1048576L))
         assertEquals("1.00 GB", UiPresentation.size(1073741824L))
     }
+    @Test fun conversationOrdersMessagesOldestFirstWithoutMutatingStorageOrder() {
+        val late=app.clipbridge.history.HistoryLocalRecord(app.clipbridge.history.HistorySyncEvent(1,"late","peer","self",200,"text","later",emptyList(),"sent"))
+        val early=late.copy(event=late.event.copy(eventId="early",createdUtc=100))
+        val storage=listOf(late,early)
+        assertEquals(listOf("early","late"),UiPresentation.conversationOrder(storage).map { it.event.eventId })
+        assertEquals("late",storage.first().event.eventId)
+    }
     @Test fun historyRowsKeepDirectionAndTerminalStateDistinct() {
         assertEquals("收到", UiPresentation.historyDirection(false))
         assertEquals("已发送", UiPresentation.historyDirection(true))
+        assertEquals("left", UiPresentation.historyAlignment(false))
+        assertEquals("right", UiPresentation.historyAlignment(true))
         assertEquals("失败", UiPresentation.historyState("失败：连接中断"))
         assertEquals("已完成", UiPresentation.historyState("已保存到 Download/ClipBridge"))
     }

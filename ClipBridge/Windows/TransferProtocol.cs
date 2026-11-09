@@ -5,15 +5,19 @@ using System.Linq;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Serialization;
+using System.Collections.Generic;
 using System.Threading;
 using System.Threading.Tasks;
 
 namespace ClipBridge.Windows;
 
-internal sealed record TransferFile(string Name, long Size, string Sha256);
+internal sealed record TransferFile(string Name, long Size, string Sha256,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? RelativePath = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)] bool IsDirectory = false);
 internal sealed record FileOffer(string Type, string TransferId, string OriginDeviceId, long TimestampUtc, TransferFile[] Files);
 internal sealed record TransferReply(string Type, string TransferId);
-internal sealed record TransferProgress(string TransferId, string Direction, string State, long Completed, long Total);
+internal sealed record TransferProgress(string TransferId, string Direction, string State, long Completed, long Total, string? PeerId = null, string Name = "", long CreatedUtc = 0);
 
 internal static class TransferProtocol
 {
@@ -34,17 +38,37 @@ internal static class TransferProtocol
     }
     public static long ValidateOffer(FileOffer offer)
     {
-        if (offer.Type != "fileOffer" || offer.TransferId == null || offer.TransferId.Length != 32 || !offer.TransferId.All(Uri.IsHexDigit) || string.IsNullOrEmpty(offer.OriginDeviceId) || offer.OriginDeviceId.Length > 64 || !SharedProtocol.IsFresh(offer.TimestampUtc) || offer.Files == null || offer.Files.Length < 1 || offer.Files.Length > 256) throw new InvalidDataException("无效的文件请求");
+        if (offer.Type is not ("fileOffer" or "fileTreeOffer") || offer.TransferId == null || offer.TransferId.Length != 32 || !offer.TransferId.All(Uri.IsHexDigit) || string.IsNullOrEmpty(offer.OriginDeviceId) || offer.OriginDeviceId.Length > 64 || !SharedProtocol.IsFresh(offer.TimestampUtc) || offer.Files == null || offer.Files.Length < 1 || offer.Files.Length > 256) throw new InvalidDataException("无效的文件请求");
+        bool tree = offer.Type == "fileTreeOffer";
+        var paths = new Dictionary<string, TransferFile>(StringComparer.OrdinalIgnoreCase);
         long total = 0;
         foreach (var file in offer.Files)
         {
             if (file == null) throw new InvalidDataException("无效的文件信息");
             ValidateFileName(file.Name);
+            if (tree)
+            {
+                ValidateRelativePath(file.RelativePath);
+                if (file.RelativePath!.Split('/').Last() != file.Name || !paths.TryAdd(file.RelativePath, file)) throw new InvalidDataException("目录条目重复或名称不匹配");
+                if (file.IsDirectory && (file.Size != 0 || !string.Equals(file.Sha256, EmptyHash, StringComparison.OrdinalIgnoreCase))) throw new InvalidDataException("目录不能包含文件数据");
+            }
+            else if (file.RelativePath != null || file.IsDirectory) throw new InvalidDataException("目录传输需要新协议");
             if (file.Size < 0 || file.Size > MaxTotalBytes || file.Sha256 == null || file.Sha256.Length != 64 || !file.Sha256.All(Uri.IsHexDigit)) throw new InvalidDataException("无效的文件信息");
             total = checked(total + file.Size);
             if (total > MaxTotalBytes) throw new InvalidDataException("文件总大小超过限制");
         }
+        if (tree) foreach (var file in offer.Files)
+        {
+            int slash = file.RelativePath!.LastIndexOf('/');
+            if (slash >= 0 && (!paths.TryGetValue(file.RelativePath[..slash], out var parent) || !parent.IsDirectory)) throw new InvalidDataException("目录父级不存在");
+        }
         return total;
+    }
+    public static string EmptyHash => Convert.ToHexString(SHA256.HashData(Array.Empty<byte>()));
+    public static void ValidateRelativePath(string? path)
+    {
+        if (string.IsNullOrEmpty(path) || Encoding.UTF8.GetByteCount(path) > 4096 || path.Split('/').Length > 64) throw new InvalidDataException("无效目录路径");
+        foreach (string part in path.Split('/')) ValidateFileName(part);
     }
     public static byte[] Chunk(string id, int index, long offset, ReadOnlySpan<byte> data)
     {

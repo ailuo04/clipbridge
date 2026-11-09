@@ -32,6 +32,8 @@ internal static class HistoryPolicy
         {
             if (file is null) throw new InvalidDataException("History file metadata is required.");
             TransferProtocol.ValidateFileName(file.Name);
+            if(file.RelativePath != null) { TransferProtocol.ValidateRelativePath(file.RelativePath); if(file.RelativePath.Split('/').Last()!=file.Name) throw new InvalidDataException("History path mismatch"); }
+            if(file.IsDirectory && (file.RelativePath == null || file.Size != 0 || !string.Equals(file.Sha256,TransferProtocol.EmptyHash,StringComparison.OrdinalIgnoreCase))) throw new InvalidDataException("Invalid history directory");
             if (file.Size < 0 || file.Sha256 is null || file.Sha256.Length != 64 || !file.Sha256.All(Uri.IsHexDigit))
                 throw new InvalidDataException("Invalid history file metadata.");
         }

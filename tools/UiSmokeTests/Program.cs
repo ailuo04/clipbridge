@@ -135,7 +135,8 @@ internal static class Program
         Delegate handler = Expression.Lambda(themeEvent.EventHandlerType!, Expression.Call(typeof(Program).GetMethod("OnTheme", BindingFlags.NonPublic | BindingFlags.Static)!, Expression.Convert(argument, typeof(object))), argument).Compile();
         themeEvent.AddEventHandler(form, handler);
         form.Show(); Pump(600);
-        Check(form.Controls.Find("SendClipboardButton", true).Length == 1, "manual clipboard send button exists");
+        Check(form.Controls.Find("OpenConversationButton", true).Length == 1, "manual conversation button exists");
+        Check(form.Controls.Find("ClipboardSyncToggle", true).Length == 0, "automatic clipboard sync is removed from the interface");
         Check(form.Controls.Find("SendFilesButton", true).Length == 1, "manual file send button exists");
         Check(form.Controls.Find("SyncAnimatedToggle", true).Length == 0, "automatic sync toggle removed");
         CheckBrandIcon(form, app, "light");
@@ -186,7 +187,7 @@ internal static class Program
             Screenshot(form, "light");
             // Populated device list, for reviewing the grid next to the empty-state topology.
             Type peerType = app.GetType("ClipBridge.Windows.PeerSnapshot")!;
-            object Peer(string name, string address, bool manual, bool seen, DateTimeOffset? last) => Activator.CreateInstance(peerType, name, address, 45822, manual, seen, last)!;
+            object Peer(string name, string address, bool manual, bool seen, DateTimeOffset? last) => Activator.CreateInstance(peerType, name, address, 45822, manual, seen, last, "smoke-" + address)!;
             Array peers = Array.CreateInstance(peerType, 3);
             peers.SetValue(Peer("Pixel-8", "10.8.165.21", false, true, DateTimeOffset.Now), 0);
             peers.SetValue(Peer("LAPTOP-OFFICE", "10.8.165.37", true, true, DateTimeOffset.Now.AddMinutes(-2)), 1);

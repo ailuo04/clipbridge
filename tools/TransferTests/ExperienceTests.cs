@@ -181,22 +181,23 @@ internal static class ExperienceTests
             Program.Check(File.Exists(savedPath) && File.ReadAllText(savedPath)=="verified file bytes","deleting a received file history record preserves local file bytes");
         }
 
+        int consentRequests=0;
         string rejectedOutput=Path.Combine(root,"rejected");
         var rejectedSenderHistory=new HistoryStore(Path.Combine(root,"rejected-sender","history","events-v1.jsonl"));
         var rejectedReceiverHistory=new HistoryStore(Path.Combine(root,"rejected-receiver","history","events-v1.jsonl"));
-        using(var receiver=new FileTransferNode(legacy,rejectedOutput,(_,_,_)=>System.Threading.Tasks.Task.FromResult(false),0,receiverHub,rejectedReceiverHistory))
+        using(var receiver=new FileTransferNode(legacy,rejectedOutput,(_,_,_)=>{ consentRequests++; return System.Threading.Tasks.Task.FromResult(false); },0,receiverHub,rejectedReceiverHistory))
         using(var sender=new FileTransferNode(legacy,Path.Combine(root,"unused-reject"),(_,_,_)=>System.Threading.Tasks.Task.FromResult(true),0,senderHub,rejectedSenderHistory))
         {
             bool rejected=false;
             try { await sender.SendAsync(System.Net.IPAddress.Loopback,new[]{sourceFile},System.Threading.CancellationToken.None,receiver.Port); }
             catch(IOException) { rejected=true; }
-            Program.Check(rejected,"file offer rejection remains a failed send result");
+            Program.Check(!rejected && consentRequests==0,"paired files arrive without requesting consent");
             long now=DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
             for(int n=0;n<100 && rejectedReceiverHistory.GetRecent(senderDeviceId,now).Count==0;n++) await System.Threading.Tasks.Task.Delay(10);
             HistoryLocalRecord senderRecord=rejectedSenderHistory.GetRecent(receiverDeviceId,now).Single();
             HistoryLocalRecord receiverRecord=rejectedReceiverHistory.GetRecent(senderDeviceId,now).Single();
-            Program.Check(senderRecord.Event.EventId==receiverRecord.Event.EventId && senderRecord.Event.State=="rejected" && receiverRecord.Event.State=="rejected","both peers record the same explicit file rejection outcome");
-            Program.Check(!Directory.Exists(rejectedOutput),"rejected file offer writes no local file");
+            Program.Check(senderRecord.Event.EventId==receiverRecord.Event.EventId && senderRecord.Event.State=="sent" && receiverRecord.Event.State=="sent","automatic receive records the same completed event on both peers");
+            Program.Check(File.ReadAllText(Path.Combine(rejectedOutput,"accepted.txt"))=="verified file bytes","automatic receive saves verified bytes");
         }
 
         string failedOutput=Path.Combine(root,"failed"); Directory.CreateDirectory(failedOutput);

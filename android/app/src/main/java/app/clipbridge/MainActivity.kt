@@ -32,14 +32,28 @@ import app.clipbridge.ui.UiPresentation
 import app.clipbridge.updates.UpdateRepository
 
 class MainActivity : Activity() {
+    companion object { private val conversations=app.clipbridge.ui.ConversationState<Uri>() }
+    private var chatOpen=false
+    private var pickerPeer=""
+    private data class ChatPosition(val first:Int,val top:Int,val atBottom:Boolean)
+    private val chatPositions=mutableMapOf<String,ChatPosition>()
     private lateinit var store: PairingStore
     private lateinit var ui: BridgeUi
     private lateinit var updates: UpdateRepository
+    private lateinit var conversationHost: LinearLayout
+    private var chatList: ListView? = null
+    private var chatPeer = ""
+    private var chatEditor: EditText? = null
+    private val drafts = conversations.texts
+    private val attachmentDrafts=conversations.attachments
+    private val chatSending get()=conversations.isSending(selected)
+    private val transferTimes = mutableMapOf<String,Long>()
     private lateinit var body: LinearLayout
     private lateinit var scroll: ScrollView
     private lateinit var navigation: LinearLayout
     private lateinit var notice: TextView
     private val handler=Handler(Looper.getMainLooper())
+    private val clipboardManager by lazy { getSystemService(ClipboardManager::class.java) }
     private val prefs by lazy { getSharedPreferences("interface",MODE_PRIVATE) }
     private var page=0
     private var selected=""
@@ -72,16 +86,20 @@ class MainActivity : Activity() {
         super.onCreate(savedInstanceState)
         store=PairingStore(this); ui=BridgeUi(this); updates=UpdateRepository.get(this)
         page=(savedInstanceState?.getInt("page") ?: 0).coerceIn(0,3); selected=prefs.getString("selected","") ?: ""
+        chatOpen=savedInstanceState?.getBoolean("chatOpen") ?: false
+        pickerPeer=savedInstanceState?.getString("pickerPeer").orEmpty()
         filter=(savedInstanceState?.getInt("filter") ?: 0).coerceIn(0,2)
         advancedExpanded=savedInstanceState?.getBoolean("advanced") ?: false
+        savedInstanceState?.getBundle("chatDrafts")?.let { bundle -> bundle.keySet().forEach { key -> if(!drafts.containsKey(key)) drafts[key]=bundle.getString(key).orEmpty() } }
+        savedInstanceState?.getBundle("attachmentDrafts")?.let { bundle->bundle.keySet().forEach { id->if(!attachmentDrafts.containsKey(id))attachmentDrafts[id]=bundle.getStringArrayList(id).orEmpty().map(Uri::parse).toMutableList() } }
         savedInstanceState?.getIntArray("pageOffsets")?.let { positions -> positions.copyInto(pageOffsets,endIndex=minOf(positions.size,pageOffsets.size)) }
         pendingScrollRestore=savedInstanceState?.containsKey("pageOffsets")==true
         val root=ui.column().apply { background=ui.backdrop() }
-        notice=ui.text("主动发送，安静接收。",12f,ui.muted).apply {
+        notice=ui.text("手动操作，安静接收。",12f,ui.muted).apply {
             minimumHeight=ui.dp(48); gravity=Gravity.CENTER_VERTICAL
             setPadding(ui.dp(16),ui.dp(9),ui.dp(16),ui.dp(9)); background=ui.glass(ui.tint,22)
             accessibilityLiveRegion=View.ACCESSIBILITY_LIVE_REGION_POLITE
-            isFocusable=true; contentDescription="连接状态：主动发送，安静接收。"
+            isFocusable=true; contentDescription="连接状态：手动操作，安静接收。"
         }
         notice.setOnClickListener {
             if(BridgeService.current?.hub?.pending?.isNotEmpty()==true) { pageOffsets[page]=scroll.scrollY; page=1; focusPairing=true; signature=""; render() }
@@ -94,10 +112,12 @@ class MainActivity : Activity() {
         }
         root.addView(notice,LinearLayout.LayoutParams(-1,-2).apply { marginStart=ui.dp(20); marginEnd=ui.dp(20); topMargin=ui.dp(8) })
         root.addView(scroll,LinearLayout.LayoutParams(-1,0,1f))
+        conversationHost=ui.column(14)
+        root.addView(conversationHost,LinearLayout.LayoutParams(-1,0,1f))
         root.addView(navigation,LinearLayout.LayoutParams(-1,-2).apply { marginStart=ui.dp(20); marginEnd=ui.dp(20); bottomMargin=ui.dp(10); topMargin=ui.dp(2) })
         setContentView(root)
         root.setOnApplyWindowInsetsListener { view,insets ->
-            if(Build.VERSION.SDK_INT>=30) { val bars=insets.getInsets(WindowInsets.Type.systemBars() or WindowInsets.Type.displayCutout()); view.setPadding(bars.left,bars.top,bars.right,bars.bottom) }
+            if(Build.VERSION.SDK_INT>=30) { val bars=insets.getInsets(WindowInsets.Type.systemBars() or WindowInsets.Type.displayCutout()); val keyboard=insets.getInsets(WindowInsets.Type.ime());view.setPadding(bars.left,bars.top,bars.right,maxOf(bars.bottom,keyboard.bottom)) }
             else { @Suppress("DEPRECATION") view.setPadding(insets.systemWindowInsetLeft,insets.systemWindowInsetTop,insets.systemWindowInsetRight,insets.systemWindowInsetBottom) }; insets
         }
         handleShare(intent); render(); updates.schedule()
@@ -116,6 +136,10 @@ class MainActivity : Activity() {
     override fun onStop() { handler.removeCallbacks(tick); super.onStop() }
     override fun onSaveInstanceState(outState: Bundle) {
         if(!pendingScrollRestore) pageOffsets[page]=scroll.scrollY
+        saveChatPosition()
+        outState.putBoolean("chatOpen",chatOpen);outState.putString("pickerPeer",pickerPeer)
+        outState.putBundle("attachmentDrafts",Bundle().apply { attachmentDrafts.forEach { (id,uris)->putStringArrayList(id,ArrayList(uris.map(Uri::toString))) } })
+        outState.putBundle("chatDrafts",Bundle().apply { drafts.forEach { (key,value) -> putString(key,value) } })
         outState.putInt("page",page); outState.putInt("filter",filter)
         outState.putBoolean("advanced",advancedExpanded); outState.putIntArray("pageOffsets",pageOffsets)
         super.onSaveInstanceState(outState)
@@ -156,9 +180,12 @@ class MainActivity : Activity() {
         if(resumed && page==1 && sessions.any { it !in seenPairSessions }) focusPairing=true
         seenPairSessions=sessions
         val next=page.toString()+selected+filter+service?.status+service?.receivedText?.length+targets().joinToString { it.toString() }+hub?.nearby?.values?.sortedBy { it.id }?.joinToString { "${it.id}:${it.address}:${it.authenticated}" }+hub?.pending?.values?.joinToString { "${it.session}:${it.id}:${it.name}:${it.address}:${it.code}:${it.expires}:${it.decision.isDone}" }+service?.pending?.keys?.joinToString()+service?.transfers?.values?.joinToString()+service?.historyRevision+updates.state+updates.progress+updates.ready
-        if(next!=signature) { signature=next; render() }
+        val composing=chatEditor?.text?.let { android.view.inputmethod.BaseInputConnection.getComposingSpanStart(it)>=0 }==true
+        if(next!=signature && !(page==0 && chatOpen && composing)) { signature=next; render() }
     }
     private fun selectPage(index: Int) {
+        saveChatPosition()
+        if(index==0 && page==0 && chatOpen){chatOpen=false;signature="";render();return}
         if(index==page) return
         if(!pendingScrollRestore) pageOffsets[page]=scroll.scrollY
         page=index; pendingScrollRestore=true; signature=""; render()
@@ -169,7 +196,7 @@ class MainActivity : Activity() {
         val key="$page/$pending/$pairs"
         if(key==navigationSignature) return
         navigationSignature=key; navigation.removeAllViews()
-        listOf("会话","设备","传输","设置").forEachIndexed { index,label ->
+        listOf("会话","添加设备","传输","设置").forEachIndexed { index,label ->
             val badge=if(index==2) pending else if(index==1) pairs else 0
             navigation.addView(ui.navigationItem(label,listOf(2,0,3,4)[index],index==page,badge) { selectPage(index) },
                 LinearLayout.LayoutParams(0,-2,1f).apply { marginStart=ui.dp(2); marginEnd=ui.dp(2) })
@@ -179,88 +206,147 @@ class MainActivity : Activity() {
         val oldY=UiPresentation.scrollOffset(pageOffsets[page],scroll.scrollY,pendingScrollRestore,focusPairing)
         focusPairing=false; body.removeAllViews(); renderNavigation()
         val generation=++renderGeneration
-        ui.pageHeader(body,listOf("连接后，轻松互传","让内容，自由流动","每一次传输，都看得见","你的互传，你来设定")[page],
-            listOf("选择设备，发送文字和文件；历史记录保留 7 天。","连接设备，主动发送，安心接收。","收到的文件，确认后才会保存。","外观、连接与更新，井然有序。")[page])
-        when(page) { 0->conversationPage(); 1->devicesPage(); 2->transfersPage(); 3->settingsPage() }
+        val showingChat=page==0 && chatOpen && target()!=null
+        scroll.visibility=if(showingChat) View.GONE else View.VISIBLE
+        conversationHost.visibility=if(showingChat) View.VISIBLE else View.GONE
+        navigation.visibility=if(showingChat) View.GONE else View.VISIBLE
+        if(page!=0) ui.pageHeader(body,listOf("会话","添加设备","传输记录","设置")[page],
+            listOf("选择设备，发送文字和文件；历史记录保留 7 天。","添加设备后，直接发送消息和原文件。","已配对设备自动接收，进度实时可见。","外观、连接与更新，井然有序。")[page])
+        when(page) { 0->if(showingChat) conversationPage() else conversationListPage(); 1->devicesPage(); 2->transfersPage(); 3->settingsPage() }
         ui.gap(body,12)
         scroll.post { if(generation==renderGeneration) { scroll.scrollTo(0,oldY); pageOffsets[page]=scroll.scrollY; pendingScrollRestore=false } }
     }
+    private fun saveChatPosition() {
+        if(chatPeer.isBlank())return
+        chatList?.let { list->chatPositions[chatPeer]=ChatPosition(list.firstVisiblePosition,list.getChildAt(0)?.top ?: 0,list.lastVisiblePosition>=list.count-2) }
+    }
+    private fun openConversation(id:String) {
+        saveChatPosition();selected=id;prefs.edit().putString("selected",id).apply();chatOpen=true;page=0;signature="";render()
+    }
+    @Deprecated("Platform back callback") override fun onBackPressed() {
+        if(page==0 && chatOpen){saveChatPosition();chatOpen=false;signature="";render();return}
+        if(page!=0){selectPage(0);return}
+        @Suppress("DEPRECATION") super.onBackPressed()
+    }
+    private fun conversationListPage() {
+        saveChatPosition();chatList=null;chatEditor=null
+        ui.pageHeader(body,"会话","与你的电脑、手机和其他设备互传。")
+        val actions=ui.row()
+        actions.addView(ui.button("添加设备",true) { selectPage(1) },LinearLayout.LayoutParams(0,-2,1f))
+        actions.addView(ui.button("接收文件夹") { safe { openLocalFiles() } },LinearLayout.LayoutParams(0,-2,1f).apply { marginStart=ui.dp(8) })
+        body.addView(actions);ui.gap(body,18)
+        val service=BridgeService.current
+        val devices=targets().filter { !it.id.startsWith("legacy:") && !it.id.startsWith("manual:") }
+        if(devices.isEmpty()) { ui.empty(body,"添加你的第一台设备","同一局域网内配对后，即可发送消息、图片、视频和文件夹。",0);return }
+        devices.forEach { device->
+            val history=runCatching { service?.recentHistory(device.id).orEmpty() }.getOrDefault(emptyList())
+            val last=history.maxByOrNull { it.event.createdUtc }?.event
+            val unread=history.count { it.event.senderDeviceId!=service?.localDeviceId() && it.event.createdUtc>prefs.getLong("read-"+device.id,0) }
+            val draft=drafts[device.id].orEmpty();val attachments=attachmentDrafts[device.id].orEmpty()
+            val subtitle=when { conversations.isSending(device.id)->"正在发送…";draft.isNotBlank()->"[草稿] "+draft;attachments.isNotEmpty()->"[草稿] ${attachments.size} 个附件";last?.text!=null->last.text;last?.files?.isNotEmpty()==true->(if(last.files.first().isDirectory) "[文件夹] " else "[文件] ")+last.files.first().name;else->"点击开始对话" }
+            val row=ui.row().apply { setPadding(ui.dp(14),ui.dp(16),ui.dp(14),ui.dp(16));background=ui.ripple(ui.background(ui.surface,16));isFocusable=true;contentDescription=device.name+"，"+(if(device.online)"在线" else "离线")+"，"+subtitle;setOnClickListener { openConversation(device.id) };setOnLongClickListener { deviceMenu(device);true } }
+            row.addView(ui.iconTile(0),LinearLayout.LayoutParams(ui.dp(44),ui.dp(44)).apply { marginEnd=ui.dp(12) })
+            val labels=ui.column();labels.addView(ui.text(device.name,16f,bold=true));labels.addView(ui.text(subtitle.orEmpty().replace('\n',' '),12f,ui.muted).apply { maxLines=1;ellipsize=android.text.TextUtils.TruncateAt.END });row.addView(labels,LinearLayout.LayoutParams(0,-2,1f))
+            val status=ui.column();status.addView(ui.text(if(device.online)"在线" else "离线",11f,if(device.online)ui.green else ui.muted));if(unread>0)status.addView(ui.badge(unread.toString(),ui.primary));row.addView(status)
+            body.addView(row,LinearLayout.LayoutParams(-1,-2).apply { bottomMargin=ui.dp(8) })
+        }
+    }
+    private fun deviceMenu(device:Target) {
+        ui.dialog().setTitle(device.name).setItems(arrayOf("打开对话","删除设备")) { _,which->if(which==0)openConversation(device.id) else deleteDevice(device) }.setNegativeButton("关闭",null).show()
+    }
+    private fun deleteDevice(device:Target) {
+        ui.dialog().setTitle("删除“${device.name}”？").setMessage("从设备列表移除并取消配对。已接收的本机文件会保留。")
+            .setNegativeButton("取消",null).setPositiveButton("删除设备") { _,_->safe {
+                BridgeService.current?.hub?.revoke(device.id) ?: store.remove(device.id)
+                conversations.forget(device.id);chatPositions.remove(device.id);prefs.edit().remove("read-"+device.id).apply()
+                if(selected==device.id){selected="";chatOpen=false;prefs.edit().remove("selected").apply()}
+                signature="";render()
+            } }.show()
+    }
+
     private fun conversationPage() {
-        val service = BridgeService.current
-        val current = target()
-        val card = ui.accentCard(body)
-        if (current == null) {
-            ui.deviceSummary(card, "连接你的第一台设备", "配对后，这里会成为轻量的发送与接收窗口。", 0, "等待设备连接")
-            ui.actionPair(card,
-                ui.button("打开设备管理") { selectPage(1) },
-                ui.button("发送到附近设备") { selectPage(1) })
-            ui.listAction(card, "打开本地接收文件", "查看或单独管理已保存的文件", 9) { safe { openLocalFiles() } }
-            return
+        val service=BridgeService.current
+        val current=target()
+        val samePeer=chatPeer==current?.id
+        val oldList=chatList
+        val remembered=chatPositions[current?.id]
+        val atBottom=if(samePeer && oldList!=null) oldList.lastVisiblePosition>=oldList.count-2 else remembered?.atBottom ?: true
+        val first=if(samePeer) oldList?.firstVisiblePosition ?: 0 else remembered?.first ?: 0
+        val top=if(samePeer) oldList?.getChildAt(0)?.top ?: 0 else remembered?.top ?: 0
+        val editing=chatEditor?.hasFocus()==true
+        val cursor=chatEditor?.selectionStart ?: 0
+        conversationHost.removeAllViews()
+        chatPeer=current?.id.orEmpty()
+        if(current==null) {
+            ui.empty(conversationHost,"连接你的设备","配对一次，文字和文件即可直接互传",0)
+            conversationHost.addView(ui.button("连接设备",true) { selectPage(1) })
+            chatList=null; chatEditor=null; return
         }
-        ui.deviceSummary(card, current.name, current.address, 0,
-            if (current.online) "● 已连接" else "● 暂时离线", current.online)
-        ui.listAction(card, "切换设备", "历史记录按设备隔离") { safe { chooseTarget() } }
-        ui.gap(body, 4)
+        val header=ui.row()
+        header.addView(ui.button("‹") { saveChatPosition();chatOpen=false;signature="";render() }.apply { contentDescription="返回会话列表" })
+        val names=ui.column()
+        names.addView(ui.text(current.name,20f,bold=true))
+        names.addView(ui.text(if(current.online) "● 在线 · 已配对设备直接接收" else "● 离线 · 连接后继续互传",11f,ui.muted))
+        header.addView(names,LinearLayout.LayoutParams(0,-2,1f))
+        header.addView(ui.button("⋯") { safe { deviceMenu(current) } }.apply { contentDescription="设备选项" })
+        conversationHost.addView(header)
+        val history=if(service!=null && !current.id.startsWith("legacy:") && !current.id.startsWith("manual:")) runCatching { service.recentHistory(current.id) }.getOrDefault(emptyList()) else emptyList()
+        val active=service?.transfers?.values?.filter { it.peerId==current.id && it.state in listOf("排队中","传输中","准备文件","连接接收设备") && history.none { h -> h.event.eventId==it.id } } ?: emptyList()
+        if(atBottom && resumed && hasWindowFocus()) { val last=history.filter { it.event.senderDeviceId!=service?.localDeviceId() }.maxOfOrNull { it.event.createdUtc } ?: 0; if(last>prefs.getLong("read-"+current.id,0))prefs.edit().putLong("read-"+current.id,last).apply() }
+        val rows=history+active.map { t ->
+            app.clipbridge.history.HistoryLocalRecord(app.clipbridge.history.HistorySyncEvent(1,t.id,current.id,if(t.direction=="发送") service?.localDeviceId().orEmpty() else current.id,transferTimes.getOrPut(t.id) { System.currentTimeMillis() },"file",null,
+                listOf(app.clipbridge.history.HistoryFileMetadata(t.name.ifBlank { "文件" },t.total,"0".repeat(64))),t.state+" · "+UiPresentation.percent(t.done,t.total)+"%"))
+        }
+        val timeline=ListView(this).apply { divider=null; clipToPadding=false; setPadding(0,ui.dp(12),0,ui.dp(8)); transcriptMode=ListView.TRANSCRIPT_MODE_NORMAL }
+        val adapter=HistoryTimelineAdapter(timeline,ui,{ service?.localDeviceId().orEmpty() },
+            { value -> safe { clipboardManager.setPrimaryClip(ClipData.newPlainText("ClipBridge",value)); message("已复制") } },
+            { uri -> safe { openReceived(uri) } },
+            { entry -> safe { shareHistory(entry) } },
+            { entry -> safe { service?.deleteHistory(entry.event.peerId,entry.event.eventId); signature=""; render() } })
+        timeline.adapter=adapter; adapter.submit(rows); chatList=timeline
+        conversationHost.addView(timeline,LinearLayout.LayoutParams(-1,0,1f))
+        timeline.setOnScrollListener(object:AbsListView.OnScrollListener { override fun onScrollStateChanged(view:AbsListView?,state:Int) { saveChatPosition() };override fun onScroll(view:AbsListView?,firstVisibleItem:Int,visibleItemCount:Int,totalItemCount:Int) {} })
+        if(atBottom) timeline.setSelection(adapter.count-1) else timeline.setSelectionFromTop(first,top)
+        val composer=ui.column(10).apply { background=ui.background(ui.surface,22) }
+        val toolbar=ui.row()
+        toolbar.addView(ui.button("文件") { safe { pickFiles() } },LinearLayout.LayoutParams(0,-2,1f))
 
-        val pendingFiles = service?.pending?.values?.filter { !it.decision.isDone } ?: emptyList()
-        pendingFiles.forEach { request ->
-            val incoming = ui.accentCard(body, ui.mint)
-            incoming.addView(ui.badge("等待你确认", ui.primary))
-            ui.gap(incoming, 7)
-            incoming.addView(ui.text(request.offer.files.first().name + if (request.offer.files.size > 1) " 等 ${request.offer.files.size} 个文件" else "", 16f, bold = true))
-            incoming.addView(ui.text("来自 ${request.address} · ${ui.size(request.offer.total)}", 12f, ui.muted))
-            ui.actionPair(incoming,
-                ui.button("拒绝") { request.decision.complete(false); message("已拒绝文件请求") },
-                ui.button("接受文件", true) { request.decision.complete(true); message("已接受，正在接收") })
-        }
-        val activeTransfers = service?.transfers?.values?.filter { it.state in listOf("传输中", "准备文件", "等待对方接受") }?.take(3) ?: emptyList()
-        activeTransfers.forEach { transfer ->
-            val active = ui.card(body)
-            ui.deviceSummary(active, transfer.name.ifBlank { transfer.direction }, transfer.state, 1)
-            val percent = UiPresentation.percent(transfer.done, transfer.total)
-            active.addView(ui.progress(percent, "${transfer.state} $percent%"))
-            ui.listAction(active, "查看传输详情") { selectPage(2) }
-        }
-        val history = if (service != null && current.id.isNotBlank() && !current.id.startsWith("legacy:") && !current.id.startsWith("manual:")) {
-            runCatching { service.recentHistory(current.id) }.getOrDefault(emptyList())
-        } else emptyList()
-        if (history.isEmpty()) {
-            ui.empty(body, "这里还没有历史记录", "点击发送后才会记录；七天后自动过期，删除记录不会删除本地文件。", 2)
-        } else {
-            ui.sectionLabel(body, "最近 7 天", "${history.size} 条记录")
-            val timeline = ListView(this).apply {
-                isVerticalScrollBarEnabled = true
-                divider = null
-                clipToPadding = false
-                contentDescription = "${current.name} 的最近七天历史记录"
+        toolbar.addView(ui.button("接收目录") { safe { openLocalFiles() } },LinearLayout.LayoutParams(0,-2,1.2f))
+        composer.addView(toolbar)
+        val attachments=attachmentDrafts[current.id].orEmpty()
+        if(attachments.isNotEmpty()) {
+            val strip=ui.row()
+            attachments.forEach { uri ->
+                val tile=ui.column(4)
+                val preview=ImageView(this).apply { scaleType=ImageView.ScaleType.FIT_CENTER }
+                tile.addView(preview,LinearLayout.LayoutParams(ui.dp(76),ui.dp(54)))
+                app.clipbridge.ui.MediaThumbnail.load(preview,uri)
+                tile.addView(ui.button("移除") { attachmentDrafts[current.id]?.remove(uri); signature=""; render() }.apply { isEnabled=!chatSending && current.online })
+                strip.addView(tile)
             }
-            val adapter = HistoryTimelineAdapter(
-                timeline,
-                ui,
-                { service?.localDeviceId() ?: "" },
-                { value -> safe { getSystemService(ClipboardManager::class.java).setPrimaryClip(ClipData.newPlainText("ClipBridge", value)); message("已复制文本") } },
-                { uri -> safe { startActivity(Intent(Intent.ACTION_VIEW).setData(uri).addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)) } },
-                { entry -> shareHistory(entry) },
-                { entry -> safe { service?.deleteHistory(entry.event.peerId, entry.event.eventId); signature = ""; message("已删除历史记录，本地文件保留"); render() } }
-            )
-            adapter.submit(history)
-            timeline.adapter = adapter
-            body.addView(timeline, LinearLayout.LayoutParams(-1, ui.dp(360)).apply { bottomMargin = ui.dp(14) })
+            composer.addView(HorizontalScrollView(this).apply { addView(strip) },LinearLayout.LayoutParams(-1,ui.dp(110)))
         }
-
-        if (sharedUris.isNotEmpty() || sharedText != null) {
-            val shared = ui.accentCard(body)
-            ui.heading(shared, "分享内容已准备好", "选择当前设备并主动确认发送")
-            action(shared, if (sharedUris.isNotEmpty()) "预览并发送 ${sharedUris.size} 个文件" else "预览分享的文字", true, current.online) {
-                if (sharedUris.isNotEmpty()) confirmFiles(sharedUris) else sharedText?.let(::previewText)
+        if(sharedUris.isNotEmpty() || sharedText!=null) composer.addView(ui.button("发送分享内容") { safe { if(sharedUris.isNotEmpty()) confirmFiles(sharedUris) else sharedText?.let { previewText(it); sharedText=null }; signature="" } })
+        val inputRow=ui.row()
+        val editor=object: EditText(this) {
+            override fun onTextContextMenuItem(id:Int):Boolean {
+                if(id==android.R.id.paste || id==android.R.id.pasteAsPlainText) {
+                    val clip=clipboardManager.primaryClip
+                    val uris=if(clip!=null) (0 until clip.itemCount).mapNotNull { clip.getItemAt(it).uri } else emptyList()
+                    if(uris.isNotEmpty()) { safe { confirmFiles(uris) }; return true }
+                }; return super.onTextContextMenuItem(id)
             }
-        }
-        val actions = ui.card(body)
-        ui.heading(actions, "现在发送", "只在你点击确认后传输")
-        val sendText = ui.button("发送文字", true) { safe { readClipboard() } }
-        val sendFiles = ui.button("发送文件") { safe { pickFiles() } }
-        ui.actionPair(actions, sendText, sendFiles)
-        ui.listAction(actions, "打开本地接收文件", "单独管理保存下来的文件，不受七天历史影响", 9) { safe { openLocalFiles() } }
+        }.apply { hint="输入消息…"; setText(drafts[current.id].orEmpty()); setTextColor(ui.ink); setHintTextColor(ui.muted); background=ui.background(ui.field,14); minLines=1; maxLines=4; isEnabled=!chatSending; setPadding(ui.dp(12),ui.dp(10),ui.dp(12),ui.dp(10)) }
+        editor.addTextChangedListener(object:android.text.TextWatcher {
+            override fun beforeTextChanged(s:CharSequence?,start:Int,count:Int,after:Int) {}
+            override fun onTextChanged(s:CharSequence?,start:Int,before:Int,count:Int) { drafts[current.id]=s?.toString().orEmpty() }
+            override fun afterTextChanged(value:android.text.Editable?) {}
+        })
+        inputRow.addView(editor,LinearLayout.LayoutParams(0,-2,1f))
+        inputRow.addView(ui.button(if(chatSending) "发送中" else "发送",true) { safe { sendDraft() } }.apply { isEnabled=!chatSending })
+        composer.addView(inputRow); conversationHost.addView(composer)
+        chatEditor=editor
+        if(editing && samePeer) { editor.requestFocus(); editor.setSelection(cursor.coerceIn(0,editor.length())) }
     }
 
     private fun shareHistory(entry: app.clipbridge.history.HistoryLocalRecord) {
@@ -317,52 +403,6 @@ class MainActivity : Activity() {
             action(permission,"开启本地网络权限",true) { startConnection() }
             ui.listAction(permission,"打开系统权限设置") { safe { startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS,Uri.parse("package:$packageName"))) } }
         }
-        val current=target()
-        val targetCard=ui.accentCard(body)
-        targetCard.addView(ui.text("当前发送目标",11f,ui.primary,true)); ui.gap(targetCard,8)
-        ui.deviceSummary(targetCard,current?.name ?: "连接你的第一台设备",
-            current?.address ?: "同一 Wi-Fi 或热点下，扫码或发现即可配对。",
-            status=if(current?.online==true) "● 已连接，可以发送" else if(current!=null) "● 设备暂时离线" else "无需手动填写密钥",connected=current?.online==true)
-        if(current!=null || targets().any { it.online }) {
-            ui.gap(targetCard,4)
-            ui.listAction(targetCard,"切换发送目标") { safe { chooseTarget() } }
-        }
-        val send=if(ui.stackActions) ui.column() else ui.row()
-        val enabled=current?.online==true
-        fun sendTile(title: String, subtitle: String, kind: Int, emphasized: Boolean, block: ()->Unit): View {
-            val tile=ui.column(16).apply {
-                background=ui.ripple(ui.glass(if(emphasized) ui.tint else ui.surface,24),24)
-                minimumHeight=ui.dp(if(ui.stackActions) 100 else 140)
-                isEnabled=enabled; isClickable=enabled; isFocusable=true
-                contentDescription=title+"，"+(if(enabled) subtitle else "请先连接一台在线设备")
-                setOnClickListener { if(enabled) safe(block) }
-            }
-            tile.addView(ui.icon(kind,if(enabled) ui.primary else ui.muted),LinearLayout.LayoutParams(ui.dp(28),ui.dp(28))); ui.gap(tile,10)
-            tile.addView(ui.text(title,16f,if(enabled) ui.ink else ui.muted,true)); tile.addView(ui.text(subtitle,12f,ui.muted))
-            return tile
-        }
-        val files=sendTile("发送文件","照片、视频与文档",1,true,::pickFiles)
-        val clipboard=sendTile("发送剪贴板","预览文字，再确认发送",2,false,::readClipboard)
-        if(ui.stackActions) {
-            send.addView(files,LinearLayout.LayoutParams(-1,-2).apply { bottomMargin=ui.dp(10) }); send.addView(clipboard,LinearLayout.LayoutParams(-1,-2))
-        } else {
-            send.addView(files,LinearLayout.LayoutParams(0,-2,1f).apply { marginEnd=ui.dp(6) }); send.addView(clipboard,LinearLayout.LayoutParams(0,-2,1f).apply { marginStart=ui.dp(6) })
-        }
-        body.addView(send,LinearLayout.LayoutParams(-1,-2).apply { bottomMargin=ui.dp(14) })
-        if(sharedUris.isNotEmpty() || sharedText!=null) {
-            val share=ui.accentCard(body)
-            share.addView(ui.text("分享内容已准备好",16f,bold=true))
-            share.addView(ui.text("先选择在线设备，确认后再发送。",12f,ui.muted))
-            action(share,if(sharedUris.isNotEmpty()) "发送分享的 "+sharedUris.size+" 个文件" else "预览分享的文字",true,enabled) {
-                if(sharedUris.isNotEmpty()) confirmFiles(sharedUris) else sharedText?.let(::previewText)
-            }
-        }
-        if(service?.receivedText!=null) {
-            val received=ui.card(body)
-            ui.listAction(received,"复制最近收到的文字","仅在你点击时写入剪贴板",2) { safe {
-                getSystemService(ClipboardManager::class.java).setPrimaryClip(ClipData.newPlainText("ClipBridge",requireService().receivedText)); message("已复制收到的文字")
-            } }
-        }
         ui.heading(body,"附近设备",if(service==null) "开启连接后，发现同一网络里的电脑与手机。" else "仅发现附近设备，不会自动建立信任。")
         val discover=ui.card(body)
         ui.actionPair(discover,ui.button(if(service==null) "开启搜索" else "重新搜索") { safe {
@@ -385,9 +425,7 @@ class MainActivity : Activity() {
         all.forEach { device ->
             val card=ui.card(body)
             ui.deviceSummary(card,device.name,device.address,status=if(device.online) "● 在线" else "● 离线",connected=device.online)
-            action(card,if(selected==device.id) "当前发送目标" else "设为发送目标",selected==device.id,device.online && selected!=device.id) {
-                selected=device.id; prefs.edit().putString("selected",selected).apply(); signature=""
-            }
+            action(card,"打开对话",true) { openConversation(device.id) }
         }
     }
     @Suppress("DEPRECATION") private fun scanPairing() {
@@ -406,8 +444,8 @@ class MainActivity : Activity() {
         startActivityForResult(scan,43)
     }
     private fun chooseTarget() {
-        val items=targets().filter { it.online }; require(items.isNotEmpty()) { "还没有在线设备，请先与附近设备配对" }
-        ui.dialog().setTitle("发送到哪台设备").setItems(items.map { "${it.name} · ${it.address}" }.toTypedArray()) { _,which -> selected=items[which].id; prefs.edit().putString("selected",selected).apply(); signature="" }.setNegativeButton("取消",null).show()
+        val items=targets(); require(items.isNotEmpty()) { "还没有设备，请先添加设备" }
+        ui.dialog().setTitle("发送到哪台设备").setItems(items.map { "${it.name} · ${it.address}" }.toTypedArray()) { _,which -> openConversation(items[which].id) }.setNegativeButton("取消",null).show()
     }
     private fun transfersPage() {
         val choices=ui.row().apply { background=ui.glass(radius=20); setPadding(ui.dp(5),ui.dp(5),ui.dp(5),ui.dp(5)) }
@@ -503,22 +541,17 @@ class MainActivity : Activity() {
         records.forEach { trusted ->
             val card=ui.card(body)
             ui.deviceSummary(card,trusted.name,trusted.platform+" · "+if(trusted.active) "已配对" else "确认恢复中",10)
-            ui.listAction(card,"取消与此设备的配对",destructive=true) {
-                ui.dialog().setTitle("取消与 "+trusted.name+" 的配对？").setMessage("该设备将无法继续传输，重新连接需要双方再次确认。")
-                    .setNegativeButton("保留",null).setPositiveButton("取消配对") { _,_ -> safe {
-                        BridgeService.current?.hub?.revoke(trusted.id) ?: store.remove(trusted.id); signature=""
-                    } }.show()
-            }
+            ui.listAction(card,"删除设备",destructive=true) { deleteDevice(Target(trusted.id,trusted.name,trusted.address,false)) }
         }
         ui.heading(body,"更多选项")
         val advanced=ui.card(body)
-        ui.listAction(advanced,if(advancedExpanded) "收起高级连接" else "高级连接","按 IP 配对、本地网络权限与旧版兼容",7) {
+        ui.listAction(advanced,if(advancedExpanded) "收起高级连接" else "高级连接","按 IP 配对、本地网络权限",7) {
             advancedExpanded=!advancedExpanded; signature=""; render()
         }
         if(advancedExpanded) {
             ui.divider(advanced)
             ui.listAction(advanced,"按 IP 发起配对","仍然需要双方核对验证码") { safe { pairByAddress() } }
-            ui.listAction(advanced,"兼容旧版 / 手动连接","仅用于旧版共享密钥连接") { safe { legacyPairing() } }
+
             ui.listAction(advanced,"本地网络权限") { safe {
                 if(!PlatformCompat.canUseLan(this)) PlatformCompat.requestLan(this) else message("当前系统允许本地网络访问")
             } }
@@ -528,7 +561,7 @@ class MainActivity : Activity() {
             val text=assets.open("third-party-notices.txt").bufferedReader().use { it.readText() }
             ui.dialog().setTitle("开源软件许可").setMessage(text).setPositiveButton("关闭",null).show()
         } }
-        body.addView(ui.text("剪贴板只在你点击发送时读取。后台请求和更新不会打开界面。",12f,ui.muted))
+        body.addView(ui.text("手动粘贴后发送；图片、视频和文件以原文件传输。",12f,ui.muted))
     }
     private fun updateSettings() {
         ui.heading(body,"应用更新","当前版本 "+updates.versionName)
@@ -577,17 +610,28 @@ class MainActivity : Activity() {
             stopConnection(); handler.postDelayed({ safe { startConnection(false) } },600)
         } }.show()
     }
-    private fun readClipboard() {
-        selectedHost(); check(hasWindowFocus()) { "请在互传界面主动操作剪贴板" }
-        val clip=getSystemService(ClipboardManager::class.java).primaryClip
-        val text=clip?.takeIf { it.itemCount>0 }?.getItemAt(0)?.text?.toString(); require(!text.isNullOrEmpty()) { "剪贴板没有纯文本" }; previewText(text)
-    }
     private fun previewText(text: String) {
         val host=selectedHost(); require(text.toByteArray().size<=BridgeProtocol.MAX_TEXT) { "文字超过 256 KiB" }
-        val view=ui.text(text,15f).apply { setPadding(ui.dp(18),ui.dp(12),ui.dp(18),ui.dp(12)); setTextIsSelectable(true) }
-        ui.dialog().setTitle("发送到 ${target()?.name ?: host}").setView(view).setNegativeButton("取消",null).setPositiveButton("确认发送") { _,_ -> safe { requireService().sendText(host,text) } }.show()
+        target()?.let { drafts[it.id]=text;openConversation(it.id) }; sharedText=null; signature=""; message("文字已填入，请点击发送")
     }
-    private fun pickFiles() { selectedHost(); @Suppress("DEPRECATION") startActivityForResult(Intent(Intent.ACTION_OPEN_DOCUMENT).apply { type="*/*"; addCategory(Intent.CATEGORY_OPENABLE); putExtra(Intent.EXTRA_ALLOW_MULTIPLE,true); addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION) },42) }
+    private fun openReceived(uri:Uri) {
+        if(android.provider.DocumentsContract.isTreeUri(uri) && contentResolver.getType(uri)==android.provider.DocumentsContract.Document.MIME_TYPE_DIR) {
+            val docs=android.provider.DocumentsContract.buildChildDocumentsUriUsingTree(uri,android.provider.DocumentsContract.getDocumentId(uri))
+            val entries=mutableListOf<Pair<String,Uri>>()
+            contentResolver.query(docs,arrayOf(android.provider.DocumentsContract.Document.COLUMN_DOCUMENT_ID,android.provider.DocumentsContract.Document.COLUMN_DISPLAY_NAME),null,null,null)?.use { c->while(c.moveToNext())entries.add(c.getString(1) to android.provider.DocumentsContract.buildDocumentUriUsingTree(uri,c.getString(0))) }
+            android.app.AlertDialog.Builder(this).setTitle("文件夹").setItems(entries.map { it.first }.toTypedArray()) { _,index->safe { openReceived(entries[index].second) } }.setNegativeButton("关闭",null).show();return
+        }
+        if(uri.authority==app.clipbridge.storage.ReceivedFileProvider.AUTHORITY) {
+            val file=app.clipbridge.storage.ReceivedFileProvider.resolve(this,uri)
+            if(file.isDirectory) {
+                val children=file.listFiles()?.sortedWith(compareBy<java.io.File> { !it.isDirectory }.thenBy { it.name }) ?: emptyList()
+                android.app.AlertDialog.Builder(this).setTitle(file.name).setItems(children.map { (if(it.isDirectory) "▣ " else "")+it.name }.toTypedArray()) { _,index->safe { openReceived(app.clipbridge.storage.ReceivedFileProvider.uri(this,children[index])) } }.setNegativeButton("关闭",null).show();return
+            }
+        }
+        startActivity(Intent(Intent.ACTION_VIEW).setDataAndType(uri,contentResolver.getType(uri) ?: "application/octet-stream").addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION))
+    }
+    private fun pickFiles() { requireService();pickerPeer=target()?.id ?: error("请选择设备"); android.app.AlertDialog.Builder(this).setTitle("添加附件").setItems(arrayOf("选择文件（图片、视频及其他文件）","选择文件夹")) { _,index->safe { if(index==0) pickDocuments() else { @Suppress("DEPRECATION") startActivityForResult(Intent(Intent.ACTION_OPEN_DOCUMENT_TREE).addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION),44) } } }.show() }
+    private fun pickDocuments() { requireService(); @Suppress("DEPRECATION") startActivityForResult(Intent(Intent.ACTION_OPEN_DOCUMENT).apply { type="*/*"; addCategory(Intent.CATEGORY_OPENABLE); putExtra(Intent.EXTRA_ALLOW_MULTIPLE,true); addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION) },42) }
     @Deprecated("Platform document picker")
     override fun onActivityResult(requestCode: Int,resultCode: Int,data: Intent?) {
         super.onActivityResult(requestCode,resultCode,data)
@@ -604,11 +648,40 @@ class MainActivity : Activity() {
             }
             return
         }
-        if(requestCode==42 && resultCode==RESULT_OK && data!=null) safe { val uris=mutableListOf<Uri>(); data.clipData?.let { clip -> repeat(clip.itemCount) { uris.add(clip.getItemAt(it).uri) } }; data.data?.let(uris::add); confirmFiles(uris.distinct()) }
+        if(requestCode in listOf(42,44) && resultCode==RESULT_OK && data!=null) safe { val uris=mutableListOf<Uri>(); data.clipData?.let { clip -> repeat(clip.itemCount) { uris.add(clip.getItemAt(it).uri) } }; data.data?.let(uris::add); confirmFiles(uris.distinct(),pickerPeer.ifBlank { selected }) }
     }
-    private fun confirmFiles(uris: List<Uri>) {
-        val host=selectedHost(); require(uris.size in 1..256) { "请选择 1 至 256 个文件" }
-        ui.dialog().setTitle("发送 ${uris.size} 个文件？").setMessage("目标：${target()?.name ?: host}\n接收方需要主动接受，可以在传输页取消。").setNegativeButton("取消",null).setPositiveButton("发送") { _,_ -> safe { requireService().sendFiles(host,uris); signature=""; selectPage(2) } }.show()
+    private fun confirmFiles(uris: List<Uri>,peerId:String=selected) {
+        val peer=targets().firstOrNull { it.id==peerId } ?: error("设备已移除，请重新选择")
+        val draft=attachmentDrafts.getOrPut(peer.id) { mutableListOf() }
+        val added=uris.distinct().filter { it !in draft }
+        require(draft.size+added.size<=256) { "最多添加 256 个附件" }
+        added.forEach { runCatching { contentResolver.takePersistableUriPermission(it,Intent.FLAG_GRANT_READ_URI_PERMISSION) } }
+        draft.addAll(added); sharedUris=emptyList(); signature=""; openConversation(peer.id); message("附件已添加，点击发送 · 原画质")
+    }
+    private fun sendDraft() {
+        if(chatSending) return
+        val peer=target()?.takeIf { it.online } ?: error("请先连接目标设备")
+        val text=drafts[peer.id].orEmpty(); val attachments=attachmentDrafts[peer.id]?.toList().orEmpty()
+        require(text.isNotBlank() || attachments.isNotEmpty()) { "请输入消息或添加附件" }
+        val service=requireService()
+        check(conversations.begin(peer.id)) { "此设备正在发送" }
+        fun finish(success:Boolean) {
+            conversations.complete(peer.id,attachments,success)
+            if(isFinishing || isDestroyed) return
+            message(if(success) "已发送 · 原文件完整保留" else "发送失败，未发送内容已保留")
+            signature=""; if(resumed) render()
+        }
+        fun files() {
+            if(attachments.isEmpty()) finish(true)
+            else try { service.sendFiles(peer.address,attachments,expectedPeerId=peer.id,complete=::finish) } catch(_:Exception) { finish(false) }
+        }
+        try {
+            if(text.isBlank()) files()
+            else service.sendText(peer.address,text,expectedPeerId=peer.id) { success ->
+                if(success) { conversations.textSent(peer.id,text); files() } else finish(false)
+            }
+        } catch(e:Exception) { conversations.complete(peer.id,attachments,false); throw e }
+        signature=""
     }
     @Suppress("DEPRECATION") private fun handleShare(value: Intent?) {
         if(value?.action !in listOf(Intent.ACTION_SEND,Intent.ACTION_SEND_MULTIPLE)) return
@@ -617,10 +690,11 @@ class MainActivity : Activity() {
     }
     private fun installUpdate() {
         if(!packageManager.canRequestPackageInstalls()) { startActivity(Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,Uri.parse("package:$packageName"))); message("允许此来源后，返回互传再次点击安装更新"); return }
+        require(BridgeService.current?.hasActiveTransfers()!=true) { "请等待传输完成后再安装更新" }
         message("正在核验安装包…")
         updates.prepareInstall { file,error -> runOnUiThread {
             if(file==null) message(error ?: "安装包不可用")
-            else if(resumed && hasWindowFocus()) safe { startActivity(Intent(Intent.ACTION_VIEW).setDataAndType(Uri.parse("content://app.clipbridge.updates/package.apk"),"application/vnd.android.package-archive").addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)) }
+            else if(resumed && hasWindowFocus()) safe { require(BridgeService.current?.hasActiveTransfers()!=true) { "请等待传输完成后再安装更新" }; startActivity(Intent(Intent.ACTION_VIEW).setDataAndType(Uri.parse("content://app.clipbridge.updates/package.apk"),"application/vnd.android.package-archive").addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)) }
             else message("更新已校验，返回互传后可再次点击安装")
         } }
     }

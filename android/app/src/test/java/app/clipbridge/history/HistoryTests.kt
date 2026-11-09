@@ -80,7 +80,7 @@ class HistoryTests {
         val eventFields = HistorySyncEvent::class.java.declaredFields.map { it.name }.toSet()
         assertTrue(eventFields.containsAll(setOf("schemaVersion", "eventId", "peerId", "senderDeviceId", "createdUtc", "contentType", "text", "files", "state")))
         assertFalse(eventFields.any { it.contains("path", ignoreCase = true) || it.contains("uri", ignoreCase = true) })
-        assertEquals(setOf("name", "size", "sha256"), HistoryFileMetadata::class.java.declaredFields.map { it.name }.filterNot { it.startsWith("$" ) }.toSet())
+        assertEquals(setOf("name", "size", "sha256", "relativePath", "isDirectory"), HistoryFileMetadata::class.java.declaredFields.map { it.name }.filterNot { it.startsWith("$" ) }.toSet())
         assertEquals(setOf("eventId", "peerId", "deletedUtc"), HistoryTombstone::class.java.declaredFields.map { it.name }.toSet())
         val page = HistorySyncPage(1, "request-1", peerId, 0, listOf(event()), emptyList())
         assertEquals(1, page.schemaVersion)

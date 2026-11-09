@@ -129,12 +129,12 @@ internal object HistorySyncProtocol {
     private fun eventToJson(event: HistorySyncEvent) = JSONObject()
         .put("schemaVersion", event.schemaVersion).put("eventId", event.eventId).put("peerId", event.peerId)
         .put("senderDeviceId", event.senderDeviceId).put("createdUtc", event.createdUtc).put("contentType", event.contentType)
-        .put("text", event.text ?: JSONObject.NULL).put("files", JSONArray().also { array -> event.files.forEach { array.put(JSONObject().put("name", it.name).put("size", it.size).put("sha256", it.sha256)) } })
+        .put("text", event.text ?: JSONObject.NULL).put("files", JSONArray().also { array -> event.files.forEach { array.put(JSONObject().put("name", it.name).put("size", it.size).put("sha256", it.sha256).apply { it.relativePath?.let { path->put("relativePath",path) };if(it.isDirectory)put("isDirectory",true) }) } })
         .put("state", event.state)
 
     private fun eventFromJson(json: JSONObject): HistorySyncEvent {
         val files = json.getJSONArray("files")
-        return HistorySyncEvent(json.getInt("schemaVersion"), json.getString("eventId"), json.getString("peerId"), json.getString("senderDeviceId"), json.getLong("createdUtc"), json.getString("contentType"), if (json.isNull("text")) null else json.getString("text"), (0 until files.length()).map { val f=files.getJSONObject(it); HistoryFileMetadata(f.getString("name"),f.getLong("size"),f.getString("sha256")) }, json.getString("state"))
+        return HistorySyncEvent(json.getInt("schemaVersion"), json.getString("eventId"), json.getString("peerId"), json.getString("senderDeviceId"), json.getLong("createdUtc"), json.getString("contentType"), if (json.isNull("text")) null else json.getString("text"), (0 until files.length()).map { val f=files.getJSONObject(it); HistoryFileMetadata(f.getString("name"),f.getLong("size"),f.getString("sha256"),if(f.has("relativePath"))f.getString("relativePath") else null,f.optBoolean("isDirectory",false)) }, json.getString("state"))
     }
     private fun tombstoneToJson(value: HistoryTombstone) = JSONObject().put("eventId", value.eventId).put("peerId", value.peerId).put("deletedUtc", value.deletedUtc)
     private fun tombstoneFromJson(json: JSONObject) = HistoryTombstone(json.getString("eventId"), json.getString("peerId"), json.getLong("deletedUtc"))

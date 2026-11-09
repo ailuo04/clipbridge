@@ -22,6 +22,8 @@ object HistoryPolicy {
         value.text?.let { require(it.toByteArray(StandardCharsets.UTF_8).size <= BridgeProtocol.MAX_TEXT) { "History text exceeds the shared protocol limit" } }
         value.files.forEach { file ->
             FileProtocol.validateName(file.name)
+            file.relativePath?.let { FileProtocol.validateRelativePath(it); require(it.substringAfterLast('/')==file.name) }
+            require(!file.isDirectory || (file.relativePath!=null && file.size==0L && file.sha256.equals(FileProtocol.EMPTY_HASH,true)))
             require(file.size >= 0) { "History file size cannot be negative" }
             require(file.sha256.matches(Regex("[0-9a-fA-F]{64}"))) { "Invalid history file SHA-256" }
         }

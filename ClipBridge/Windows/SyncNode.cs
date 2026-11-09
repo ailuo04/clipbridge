@@ -32,6 +32,7 @@ internal sealed class SyncNode : IDisposable
     private bool _disposed;
     public int Port => ((IPEndPoint)_tcpListener.LocalEndpoint).Port;
     public event Action<string>? RemoteTextReceived;
+    public event Action<string, TaskCompletionSource<ClipboardReadResult>>? ClipboardRequested;
     public event Action<string>? StatusChanged;
 
     public SyncNode(byte[] pairingKey, Action<Action> dispatchToUi, int textPort = SharedProtocol.TcpPort, bool discovery = true, DeviceHub? hub = null, HistoryStore? historyStore = null)
@@ -96,7 +97,7 @@ internal sealed class SyncNode : IDisposable
 
     private readonly ConcurrentDictionary<string,byte> _activeHistorySync = new();
 
-    public async Task<bool> SendTextAsync(IPAddress address, string text, CancellationToken token, int port = SharedProtocol.TcpPort)
+    public async Task<bool> SendTextAsync(IPAddress address, string text, CancellationToken token, int port = SharedProtocol.TcpPort, string? expectedPeerId = null)
     {
         if (!SharedProtocol.IsLocalAddress(address)) throw new ArgumentException("请输入局域网 IPv4 地址");
         if (string.IsNullOrEmpty(text)) throw new ArgumentException("剪贴板没有纯文本");
@@ -113,6 +114,7 @@ internal sealed class SyncNode : IDisposable
             OutgoingSessionRoute route = _hub == null
                 ? new OutgoingSessionRoute(_key, null)
                 : await _hub.OutgoingRouteAsync(client.GetStream(), address, 1, _key, deadline.Token);
+            if(expectedPeerId != null && route.PeerId != expectedPeerId) throw new IOException("目标设备已变化，请重新选择");
             byte[] frame = SharedProtocol.Frame(SharedProtocol.Encrypt(route.Key, SharedProtocol.Serialize(message)));
             await client.GetStream().WriteAsync(frame, deadline.Token);
             Report("文字已发送，接收结果请在目标设备确认");
@@ -133,6 +135,26 @@ internal sealed class SyncNode : IDisposable
         catch (Exception exception) when (exception is IOException or SocketException or OperationCanceledException or CryptographicException or JsonException or InvalidDataException or ObjectDisposedException)
         { System.Diagnostics.Trace.TraceWarning("ClipBridge history sync failed: {0}", exception); return false; }
         finally { _activeHistorySync.TryRemove(sessionKey, out _); }
+    }
+
+    public async Task<ClipboardReadResult> RequestClipboardAsync(IPAddress address, string peerId, CancellationToken token, int port = SharedProtocol.TcpPort)
+    {
+        if (_hub == null || !PairingProtocol.ValidId(peerId) || !SharedProtocol.IsLocalAddress(address)) throw new ArgumentException("请选择已配对的局域网设备");
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(token, _stop.Token); deadline.CancelAfter(TimeSpan.FromSeconds(15));
+        using var client = new TcpClient(AddressFamily.InterNetwork); await client.ConnectAsync(address, port, deadline.Token);
+        NetworkStream stream = client.GetStream();
+        OutgoingSessionRoute route = await _hub.OutgoingRouteAsync(stream, address, 1, _key, deadline.Token);
+        if (route.PeerId != peerId) throw new IOException("目标设备身份已变化，请重新选择设备");
+        string requestId = Guid.NewGuid().ToString("N");
+        var request = ClipboardSyncProtocol.Request(requestId, _deviceId, peerId, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
+        await stream.WriteAsync(SharedProtocol.Frame(SharedProtocol.Encrypt(route.Key, SharedProtocol.Serialize(request))), deadline.Token);
+        byte[] header = new byte[4]; await stream.ReadExactlyAsync(header, deadline.Token);
+        int size = SharedProtocol.ReadFrameLength(header);
+        if (size < 28 || size > SharedProtocol.MaxFrameBytes) throw new InvalidDataException("剪贴板同步响应长度无效");
+        byte[] frame = new byte[size]; await stream.ReadExactlyAsync(frame, deadline.Token);
+        using var response = JsonDocument.Parse(SharedProtocol.Decrypt(route.Key, frame));
+        return ClipboardSyncProtocol.ReadResponse(response, requestId, peerId, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
     }
 
     private long _historyRequestSequence;
@@ -280,6 +302,13 @@ internal sealed class SyncNode : IDisposable
                 await stream.ReadExactlyAsync(frame, deadline.Token);
                 byte[] plaintext = SharedProtocol.Decrypt(route.Key, frame);
                 using var messageDocument = JsonDocument.Parse(plaintext);
+                if (messageDocument.RootElement.TryGetProperty("Type", out JsonElement clipboardType) && clipboardType.ValueKind == JsonValueKind.String && clipboardType.GetString() == "clipboardRequest")
+                {
+                    handlingHistorySync = true;
+                    deadline.CancelAfter(TimeSpan.FromSeconds(12));
+                    await HandleClipboardRequestAsync(stream, route.Key, route.Source, messageDocument, deadline.Token);
+                    return;
+                }
                 if (messageDocument.RootElement.TryGetProperty("type", out JsonElement messageType) && messageType.ValueKind == JsonValueKind.String && messageType.GetString()?.StartsWith("historySync", StringComparison.Ordinal) == true)
                 {
                     handlingHistorySync = true;
@@ -298,6 +327,40 @@ internal sealed class SyncNode : IDisposable
             { if (!token.IsCancellationRequested && !handlingHistorySync) Report("一条文字未能接收，请检查配对和网络"); }
             finally { _connections.Release(); }
         }
+    }
+
+    private async Task HandleClipboardRequestAsync(Stream stream, byte[] key, string? peerId, JsonDocument document, CancellationToken token)
+    {
+        string requestId = document.RootElement.TryGetProperty("MessageId", out JsonElement messageId) ? messageId.GetString() ?? "invalid" : "invalid";
+        ClipboardReadResult result = new("disabled");
+        if (peerId != null && _hub?.IsTrusted(peerId) == true)
+        {
+            try
+            {
+                ClipboardRequestMessage request = ClipboardSyncProtocol.ReadRequest(document, peerId, _deviceId);
+                requestId = request.MessageId;
+                if (RememberMessage(requestId))
+                {
+                    var answer = new TaskCompletionSource<ClipboardReadResult>(TaskCreationOptions.RunContinuationsAsynchronously);
+                    _dispatchToUi(() =>
+                    {
+                        if (_disposed || _hub?.IsTrusted(peerId) != true) answer.TrySetResult(new("disabled"));
+                        else if (ClipboardRequested == null) answer.TrySetResult(new("foreground"));
+                        else ClipboardRequested.Invoke(peerId, answer);
+                    });
+                    result = await answer.Task.WaitAsync(token);
+                    if (result.Status == "ok" && (string.IsNullOrEmpty(result.Text) || Encoding.UTF8.GetByteCount(result.Text) > SharedProtocol.MaxTextBytes || string.Equals(result.Text.Trim(), _pairingKeyText, StringComparison.OrdinalIgnoreCase))) result = new("error");
+                    if (result.Status is not ("ok" or "empty" or "foreground" or "disabled" or "error")) result = new("error");
+                    if (result.Status != "ok") result = new(result.Status);
+                }
+            }
+            catch (Exception error) when (error is InvalidDataException or JsonException or InvalidOperationException or KeyNotFoundException) { result = new("error"); }
+        }
+        long responseUtc = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        if (result.Status == "ok" && peerId != null)
+            RecordTextHistory(peerId, new ClipboardMessage("clipboard", requestId, _deviceId, result.Text, responseUtc));
+        var response = ClipboardSyncProtocol.Response(requestId, _deviceId, result, responseUtc);
+        await stream.WriteAsync(SharedProtocol.Frame(SharedProtocol.Encrypt(key, SharedProtocol.Serialize(response))), token);
     }
 
     private async Task HandleHistorySyncAsync(Stream stream, byte[] key, string peerId, HistorySyncMessage first, CancellationToken token)
@@ -335,6 +398,14 @@ internal sealed class SyncNode : IDisposable
             try { await SyncHistoryAsync(IPAddress.Parse(peer.Address), peer.Id, SharedProtocol.TcpPort, _stop.Token); }
             finally { _activeHistorySync.TryRemove(epochKey, out _); }
         });
+    }
+
+    public void RecordClipboardSync(string peerId, ClipboardReadResult result)
+    {
+        if (result.Status != "ok" || string.IsNullOrWhiteSpace(result.Text) || Encoding.UTF8.GetByteCount(result.Text) > SharedProtocol.MaxTextBytes) return;
+        long createdUtc = result.TimestampUtc > 0 ? result.TimestampUtc : DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        string eventId = string.IsNullOrWhiteSpace(result.MessageId) ? Guid.NewGuid().ToString("N") : result.MessageId;
+        RecordTextHistory(peerId, new ClipboardMessage("clipboard", eventId, peerId, result.Text, createdUtc));
     }
 
     private void RecordTextHistory(string peerId, ClipboardMessage message)

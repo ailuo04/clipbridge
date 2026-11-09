@@ -16,7 +16,9 @@ data class HistorySyncEvent(
 data class HistoryFileMetadata(
     val name: String,
     val size: Long,
-    val sha256: String
+    val sha256: String,
+    val relativePath: String? = null,
+    val isDirectory: Boolean = false
 )
 
 data class HistoryTombstone(

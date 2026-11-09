@@ -167,13 +167,9 @@ internal static class HistoryTests
 
         string trayPath = Path.Combine(repositoryRoot, "ClipBridge", "Windows", "TrayAppContext.cs");
         string traySource = File.ReadAllText(trayPath);
-        MethodBodyBounds? previewBounds = FindMethodBodyBounds(traySource, "private async Task PreviewClipboardAsync()");
-        Program.Check(previewBounds.HasValue, "bounded parser locates PreviewClipboardAsync");
-        MethodBodyBounds bounds = previewBounds.GetValueOrDefault();
-        string previewBody = traySource[(bounds.OpeningBrace + 1)..bounds.ClosingBrace];
-        Program.Check(ContainsClipboardReadApi(previewBody), "clipboard reads remain inside explicit PreviewClipboardAsync");
-        string trayOutsidePreview = traySource.Remove(bounds.OpeningBrace, bounds.ClosingBrace - bounds.OpeningBrace + 1);
-        Program.Check(!ContainsClipboardReadApi(trayOutsidePreview), "TrayAppContext has no clipboard reads outside PreviewClipboardAsync");
+        Program.Check(!ContainsClipboardReadApi(traySource), "TrayAppContext does not read clipboard in background");
+        string composer=File.ReadAllText(Path.Combine(repositoryRoot,"ClipBridge","Windows","MessageComposer.cs"));
+        Program.Check(ContainsClipboardReadApi(composer),"clipboard reads are handled by explicit composer paste");
     }
 
     private static void ClipboardPreviewMethodParserHandlesNestedBraces()

@@ -21,6 +21,7 @@
         </activity>
         <activity android:name="com.journeyapps.barcodescanner.CaptureActivity" android:exported="false" android:screenOrientation="fullSensor" tools:replace="android:screenOrientation" />
         <service android:name=".updates.UpdateJobService" android:permission="android.permission.BIND_JOB_SERVICE" android:exported="true" />
+        <provider android:name=".storage.ReceivedFileProvider" android:authorities="app.clipbridge.received" android:exported="false" android:grantUriPermissions="true" />
         <provider android:name=".updates.UpdateProvider" android:authorities="app.clipbridge.updates" android:exported="false" android:grantUriPermissions="true" />
         <service android:name=".network.BridgeService" android:exported="false" android:foregroundServiceType="connectedDevice" />
     </application>

@@ -6,11 +6,16 @@ import java.util.Locale
 
 /** Presentation-only rules: no Activity, storage, network or clipboard access. */
 object UiPresentation {
+    fun conversationOrder(values: List<HistoryLocalRecord>): List<HistoryLocalRecord> = values.sortedWith(compareBy<HistoryLocalRecord> { it.event.createdUtc }.thenBy { it.event.eventId })
+
     fun historyDirection(isOutgoing: Boolean): String = if (isOutgoing) "已发送" else "收到"
+
+    fun historyAlignment(isOutgoing: Boolean): String = if (isOutgoing) "right" else "left"
 
     fun historyContentKind(entry: HistoryLocalRecord): String = if (entry.event.contentType == "file") "文件" else "文本"
 
     fun historyState(state: String): String = when {
+        state.contains("%") -> state
         state.contains("失败", true) || state.contains("failed", true) || state.contains("error", true) -> "失败"
         state.contains("拒绝", true) || state.contains("reject", true) -> "已拒绝"
         state.contains("取消", true) || state.contains("cancel", true) -> "已取消"
@@ -39,7 +44,7 @@ object UiPresentation {
         ((done.coerceAtLeast(0).toDouble() / total.toDouble()) * 100).coerceIn(0.0, 100.0).toInt()
 
     fun transferGroup(state: String): String = when {
-        state in setOf("准备文件", "等待对方接受", "传输中") -> "active"
+        state in setOf("排队中","准备文件", "连接接收设备", "传输中") -> "active"
         state == "待接受" -> "waiting"
         state.startsWith("已保存") || state == "对方已保存并校验" || state == "已发送" -> "finished"
         state.startsWith("失败") || state.startsWith("已取消") || state.startsWith("已拒绝") -> "unsuccessful"

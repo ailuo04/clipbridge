@@ -6,7 +6,9 @@ using System.IO;
 using System.Linq;
 using System.Collections.Concurrent;
 using System.Net;
+using System.Net.Sockets;
 using System.Runtime.InteropServices;
+using System.Security.Cryptography;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Windows.Forms;
@@ -26,9 +28,7 @@ internal sealed class TrayAppContext : ApplicationContext
     private readonly DeviceHub _devices;
     private readonly HistoryStore? _history;
     private HistoryPruneScheduler? _historyPruneScheduler;
-    private DevicesForm? _devicesForm;
-    private ConversationForm? _conversation;
-    private bool _conversationSuppressed;
+    private ConversationView? _conversation;
 
 	private readonly FileTransferNode _files;
     private readonly string _receiveDirectory = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "Downloads", "ClipBridge");
@@ -37,7 +37,7 @@ internal sealed class TrayAppContext : ApplicationContext
     private readonly ConcurrentDictionary<string, TransferProgress> _transfers = new();
     private TransfersForm? _transfersForm;
 
-	private ControlPanelForm _panel;
+	private WorkspaceForm _panel;
 
 
 
@@ -91,12 +91,13 @@ internal sealed class TrayAppContext : ApplicationContext
 		try { _history = new HistoryStore(); } catch { _history = null; }
 		_node = new SyncNode(_pairingKey, Dispatch, discovery: false, hub: _devices, historyStore: _history);
         _devices.LegacyDiscovered += _node.DiscoveredLegacy;
-		_panel = CreatePanel(Convert.ToHexString(_pairingKey));
+
 		_files = new FileTransferNode(_pairingKey, _receiveDirectory, QueueFileRequestAsync, hub: _devices, historyStore: _history);
-        _conversation = CreateConversation();
+        _panel = CreateWorkspace();
+        _conversation = _panel.Conversation;
         _devices.PeerReady += peer => Dispatch(() =>
         {
-            if (!_exiting && !_conversationSuppressed) OpenConversation(peer.Id);
+            if (!_exiting) { _panel.RefreshWorkspace(); }
         });
         _devices.Status += text => Dispatch(() => ReportStatus(text));
         _files.Progress += progress => { _transfers[progress.TransferId] = progress; };
@@ -110,19 +111,11 @@ internal sealed class TrayAppContext : ApplicationContext
 		{
 			_panel.ShowControlPanel();
 		});
-        _trayMenu.Items.Add("发送当前剪贴板", null, async (_, _) => await PreviewClipboardAsync());
+        _trayMenu.Items.Add("发消息…", null, (_, _) => OpenConversationOrPanel());
         _trayMenu.Items.Add("发送文件", null, (_, _) => ChooseFiles());
         _trayMenu.Items.Add("文件请求与传输记录", null, (_, _) => OpenTransfers());
 		_trayMenu.Items.Add("附近设备与配对", null, (_, _) => OpenDevices());
-        _trayMenu.Items.Add("兼容旧版：配对密钥", null, (object? _, EventArgs _) =>
-		{
-			_panel.FocusPairing();
-		});
-		_trayMenu.Items.Add("添加设备 IP", null, (object? _, EventArgs _) =>
-		{
-			_panel.FocusManualPeer();
-		});
-		_statusMenu = new ToolStripMenuItem("就绪 · 主动发送模式")
+		_statusMenu = new ToolStripMenuItem("就绪 · 局域网互传")
 		{
 			Enabled = false
 		};
@@ -135,7 +128,7 @@ internal sealed class TrayAppContext : ApplicationContext
 		ApplyThemeToTrayMenu();
 		_trayIcon = new NotifyIcon
 		{
-			Text = "ClipBridge · 主动发送",
+			Text = "ClipBridge · 互传",
 			Icon = AppIcon.Load(),
 			ContextMenuStrip = _trayMenu,
 			Visible = true
@@ -146,13 +139,13 @@ internal sealed class TrayAppContext : ApplicationContext
 		};
 		_devices.PairingRequested += () => Dispatch(() =>
         {
-            if (_exiting || (_devicesForm != null && _devicesForm.Visible)) return;
+            if (_exiting) return;
             _trayIcon.BalloonTipTitle = "互传 · 设备配对";
             _trayIcon.BalloonTipText = "有设备等待配对，点击这里核对验证码。";
             _trayIcon.ShowBalloonTip(10000);
         });
         _trayIcon.BalloonTipClicked += (_, _) => { if (!_devices.Pending.IsEmpty) OpenDevices(); };
-        _node.RemoteTextReceived += SetClipboardText;
+        _node.RemoteTextReceived += _ => { ReportStatus("收到新消息，可在会话中查看或复制"); _conversation?.RefreshHistory(); };
 		_node.StatusChanged += ReportStatus;
 		_themeController.ThemeChanged += OnThemeChanged;
 		_refreshTimer.Tick += (object? _, EventArgs _) =>
@@ -175,39 +168,25 @@ internal sealed class TrayAppContext : ApplicationContext
                 error => System.Diagnostics.Trace.TraceWarning("ClipBridge history prune failed: {0}", error));
         }
 		RefreshPanel();
-
+        _panel.ShowControlPanel();
 	}
 
-	private ConversationForm CreateConversation()
-{
-    var form = new ConversationForm(
-        _history,
-        _devices.DeviceId,
-        () => _node.GetPeerSnapshots(),
-        async (peer, text, token) => await _node.SendTextAsync(IPAddress.Parse(peer.Address), text, token),
-        ShowFileSend,
-        OpenReceiveDirectory,
-        OpenDevices);
-    form.HiddenToTray += () => _conversationSuppressed = true;
-    return form;
-}
-
-private void OpenConversation(string? peerId = null)
-{
-    if (_conversation is null || _conversation.IsDisposed) return;
-    _conversationSuppressed = false;
-    _conversation.RefreshPeers(_node.GetPeerSnapshots(), peerId);
-    _conversation.Show();
-    if (_conversation.WindowState == FormWindowState.Minimized) _conversation.WindowState = FormWindowState.Normal;
-    _conversation.Activate();
-}
-
-private void OpenConversationOrPanel()
-{
-    PeerSnapshot? peer = _node.GetPeerSnapshots().FirstOrDefault(item => item.RecentlySeen && !string.IsNullOrWhiteSpace(item.PeerId));
-    if (peer is not null) OpenConversation(peer.PeerId);
-    else _panel.ShowControlPanel();
-}
+    private PeerSnapshot[] WorkspacePeers()
+    {
+        var live=_node.GetPeerSnapshots();
+        return _devices.Trusted().Where(x=>x.Active).Select(trust=>live.FirstOrDefault(p=>p.PeerId==trust.Id)??new PeerSnapshot(trust.Name,trust.Address,SharedProtocol.TcpPort,false,false,null,trust.Id)).OrderBy(x=>x.Name,StringComparer.Ordinal).ToArray();
+    }
+    private WorkspaceForm CreateWorkspace()
+    {
+        var page=new DevicesView(_devices);
+        return new WorkspaceForm(_history,_devices.DeviceId,WorkspacePeers,
+            (peer,text,token)=>_node.SendTextAsync(IPAddress.Parse(peer.Address),text,token,expectedPeerId:peer.PeerId),
+            (peer,paths,token)=>_files.SendAsync(IPAddress.Parse(peer.Address),paths,token,expectedPeerId:peer.PeerId),
+            OpenReceiveDirectory,id=>_devices.Revoke(id),()=>_ = CheckForUpdatesAsync(true),ChangeTheme,page,
+            Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),"ClipBridge","workspace.json"));
+    }
+    private void OpenConversation(string? peerId=null){_panel.OpenConversation(peerId);}
+    private void OpenConversationOrPanel(){_panel.ShowControlPanel();}
 
 private void OpenReceiveDirectory()
 {
@@ -219,34 +198,6 @@ private void OpenReceiveDirectory()
     catch (Exception error) { ReportStatus("打开保存位置失败：" + error.Message); }
 }
 
-
-private ControlPanelForm CreatePanel(string pairingKey, bool emitStartupEvent = true)
-	{
-		ControlPanelForm controlPanelForm = new ControlPanelForm(pairingKey, _themeController.Mode, emitStartupEvent);
-		controlPanelForm.ManageDevicesRequested += OpenDevices;
-        controlPanelForm.SendClipboardRequested += async () => await PreviewClipboardAsync();
-        controlPanelForm.SendFilesRequested += ShowFileSend;
-        controlPanelForm.ReviewIncomingRequested += OpenTransfers;
-		controlPanelForm.CopyKeyRequested += CopyPairingKey;
-		controlPanelForm.AddPeerRequested += AddManualPeer;
-		controlPanelForm.RemovePeerRequested += RemoveManualPeer;
-		controlPanelForm.RefreshRequested += RefreshPanel;
-		controlPanelForm.CheckUpdateRequested += () =>
-		{
-			_ = CheckForUpdatesAsync(manual: true);
-		};
-		controlPanelForm.ThemeChangeRequested += ChangeTheme;
-		controlPanelForm.FormClosed += OnPanelFormClosed;
-		return controlPanelForm;
-	}
-
-	private void OnPanelFormClosed(object? sender, FormClosedEventArgs e)
-	{
-		if (!_exiting && sender == _panel)
-		{
-			ExitThread();
-		}
-	}
 
 	private void ChangeTheme(UiThemeMode mode)
 	{
@@ -270,7 +221,7 @@ private ControlPanelForm CreatePanel(string pairingKey, bool emitStartupEvent = 
 			// preparing the panel's buffered transition.
 			ApplyThemeToTrayMenu();
 			_panel.ApplyTheme(_themeController.Mode);
-            if (_devicesForm is { IsDisposed: false }) _devicesForm.ApplyTheme();
+
             if (_updateDialog is { IsDisposed: false }) _updateDialog.ApplyTheme();
             if (_conversation is { IsDisposed: false }) _conversation.ApplyTheme();
 		}
@@ -316,12 +267,10 @@ private ControlPanelForm CreatePanel(string pairingKey, bool emitStartupEvent = 
 		if (!_exiting)
 		{
 			PeerSnapshot[] peers = _node.GetPeerSnapshots();
-            _panel.UpdatePeers(peers);
-            _conversation?.RefreshPeers(peers);
-            if (!_conversationSuppressed && _conversation is { Visible: false } && peers.FirstOrDefault(peer => peer.RecentlySeen && !string.IsNullOrWhiteSpace(peer.PeerId)) is PeerSnapshot online)
-                OpenConversation(online.PeerId);
-            _panel.SetPendingFiles(_pending.Count);
-            _panel.SetPairingCount(_devices.Pending.Count);
+            _panel.RefreshWorkspace();
+
+            _conversation?.SetTransfers(_transfers.Values.ToArray());
+
             _trayIcon.Text = _pending.IsEmpty ? "ClipBridge · 主动发送" : $"ClipBridge · {_pending.Count} 个待接收请求";
             UpdateTransfers();
 		}
@@ -402,6 +351,7 @@ private ControlPanelForm CreatePanel(string pairingKey, bool emitStartupEvent = 
 
     private async Task DownloadAndInstallUpdateAsync(AvailableUpdate update, UpdateDialog dialog)
     {
+        if (_conversation?.HasActiveSends==true || _files.IsBusy) { dialog.ShowFailure("请等待文件传输完成后再安装更新。"); return; }
         if (_exiting || Interlocked.Exchange(ref _updateInstalling, 1) != 0) return;
         using var cancellation = CancellationTokenSource.CreateLinkedTokenSource(_updateLifetime.Token);
         _updateDownload = cancellation;
@@ -419,6 +369,7 @@ private ControlPanelForm CreatePanel(string pairingKey, bool emitStartupEvent = 
             cancellation.Token.ThrowIfCancellationRequested();
             if (_exiting) return;
             dialog.Report(new UpdateProgress(UpdateStage.Waiting));
+            if(_files.IsBusy || _conversation?.HasActiveSends==true)throw new IOException("有新的传输正在进行，请传输完成后再安装。");
             SelfUpdate.LaunchUpdater(staged);
             handedOff = true;
             ReportStatus("更新已校验，独立安装窗口正在接管");
@@ -456,23 +407,6 @@ private ControlPanelForm CreatePanel(string pairingKey, bool emitStartupEvent = 
         });
     }
 
-    private async Task PreviewClipboardAsync()
-    {
-        string text = "";
-        for (int i = 0; i < 6; i++)
-        {
-            try { text = Clipboard.ContainsText(TextDataFormat.UnicodeText) ? Clipboard.GetText(TextDataFormat.UnicodeText) : ""; break; }
-            catch (ExternalException) { if (i == 5) { ReportStatus("剪贴板正忙，请稍后重试"); return; } await Task.Delay(50); }
-        }
-        if (string.IsNullOrEmpty(text)) { ReportStatus("剪贴板没有纯文本"); return; }
-        if (string.Equals(text.Trim(), Convert.ToHexString(_pairingKey), StringComparison.OrdinalIgnoreCase)) { ReportStatus("不能发送配对密钥"); return; }
-        if (System.Text.Encoding.UTF8.GetByteCount(text) > SharedProtocol.MaxTextBytes) { ReportStatus("文本超过 256 KiB"); return; }
-        string captured = text;
-        var window = new ManualSendForm(_node.GetPeerSnapshots(), "发送剪贴板 · " + System.Text.Encoding.UTF8.GetByteCount(text) + " 字节", text, async (address, token) =>
-        { if (!await _node.SendTextAsync(address, captured, token)) throw new IOException("发送失败，请检查目标设备和网络"); });
-        window.Show(_panel);
-    }
-
     private void ChooseFiles()
     {
         using var dialog = new OpenFileDialog { Multiselect = true, Title = "选择要发送的文件" };
@@ -481,9 +415,12 @@ private ControlPanelForm CreatePanel(string pairingKey, bool emitStartupEvent = 
 
     private void ShowFileSend(string[] paths)
     {
-        if (paths.Length == 0 || paths.Length > 256 || paths.Any(path => !File.Exists(path))) { ReportStatus("请选择 1 至 256 个普通文件，暂不支持文件夹"); return; }
-        var window = new ManualSendForm(_node.GetPeerSnapshots(), "发送文件", string.Join(Environment.NewLine, paths.Select(Path.GetFileName)), (address, token) => _files.SendAsync(address, paths, token));
-        window.Show(_panel);
+        if (paths.Length == 0 || paths.Length > 256 || paths.Any(path => !File.Exists(path) && !Directory.Exists(path))) { ReportStatus("请选择 1 至 256 个文件或文件夹"); return; }
+        PeerSnapshot? peer = _conversation is { Visible: true } ? _conversation.SelectedPeer : _panel.SelectedPeer;
+        peer ??= _node.GetPeerSnapshots().FirstOrDefault(p => p.RecentlySeen && !string.IsNullOrWhiteSpace(p.PeerId));
+        if(peer == null) { ReportStatus("请先连接并选择设备"); return; }
+        OpenConversation(peer.PeerId);
+        _conversation?.AddAttachments(paths);
     }
 
     private async Task<bool> QueueFileRequestAsync(FileOffer offer, IPAddress address, CancellationToken token)
@@ -518,56 +455,7 @@ private ControlPanelForm CreatePanel(string pairingKey, bool emitStartupEvent = 
         _transfersForm.UpdateRows(rows);
     }
 
-	private void OpenDevices()
-    {
-        if (_devicesForm is { IsDisposed: false, Visible: true }) { _devicesForm.Activate(); return; }
-        using var dialog = new DevicesForm(_devices);
-        _devicesForm = dialog;
-        dialog.FormClosed += (_, _) => { if (ReferenceEquals(_devicesForm, dialog)) _devicesForm = null; };
-        dialog.ShowDialog(_panel);
-    }
-
-	private void CopyPairingKey()
-	{
-		string text = Convert.ToHexString(_pairingKey);
-		try
-		{
-			Clipboard.SetText(text);
-			ReportStatus("配对密钥已复制");
-		}
-		catch (ExternalException)
-		{
-			ReportStatus("剪贴板正忙，请稍后重试复制密钥");
-		}
-	}
-
-	private void AddManualPeer(string input)
-	{
-		if (!IPAddress.TryParse(input.Trim(), out IPAddress address) || !SharedProtocol.IsLocalAddress(address))
-		{
-			ReportStatus("请输入有效的局域网 IPv4 地址");
-			return;
-		}
-		try
-		{
-			_node.AddManualPeer(address);
-			_panel.ClearManualInput();
-			RefreshPanel();
-		}
-		catch (InvalidOperationException)
-		{
-			ReportStatus("设备地址数量已达上限");
-		}
-	}
-
-	private void RemoveManualPeer(string input)
-	{
-		if (IPAddress.TryParse(input, out IPAddress address))
-		{
-			_node.RemoveManualPeer(address);
-			RefreshPanel();
-		}
-	}
+    private void OpenDevices() { _panel.ShowDevices();_panel.ShowControlPanel(); }
 
 	private void ReportStatus(string status)
 	{
@@ -578,15 +466,6 @@ private ControlPanelForm CreatePanel(string pairingKey, bool emitStartupEvent = 
 		}
 	}
 
-    private async void SetClipboardText(string text)
-    {
-        for (int i = 0; i < 6 && !_exiting; i++)
-        {
-            try { Clipboard.SetText(text, TextDataFormat.UnicodeText); ReportStatus("已接收并写入剪贴板"); return; }
-            catch (ExternalException) { if (i < 5) await Task.Delay(50); }
-        }
-        if (!_exiting) ReportStatus("剪贴板正忙，本次接收未写入");
-    }
 
 	protected override void ExitThreadCore()
 	{
@@ -605,7 +484,7 @@ private ControlPanelForm CreatePanel(string pairingKey, bool emitStartupEvent = 
             _transfersForm?.Dispose();
             _conversation?.Dispose();
 			_node.Dispose();
-            _devices.Dispose(); _devicesForm?.Dispose();
+            _devices.Dispose();
 			_trayIcon.Visible = false;
 			_trayIcon.ContextMenuStrip?.Dispose();
 			_trayIcon.Dispose();

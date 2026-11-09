@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Windows.Forms;
 using System.IO;
 using System.Linq;
 using ClipBridge.Windows.History;
@@ -15,6 +16,8 @@ internal static class HistoryPresentation
 
     public static string Direction(bool isOutgoing) => isOutgoing ? "已发送" : "收到";
 
+    public static HorizontalAlignment Alignment(bool isOutgoing) => isOutgoing ? HorizontalAlignment.Right : HorizontalAlignment.Left;
+
     public static string ContentKind(string contentType) =>
         string.Equals(contentType, "file", StringComparison.OrdinalIgnoreCase) ? "文件" : "文本";
 
@@ -23,6 +26,7 @@ internal static class HistoryPresentation
     public static string State(string? state)
     {
         if (string.IsNullOrWhiteSpace(state)) return "未知状态";
+        if (state.Contains("%", StringComparison.Ordinal)) return state;
         if (state.Contains("失败", StringComparison.OrdinalIgnoreCase) ||
             state.Contains("failed", StringComparison.OrdinalIgnoreCase) ||
             state.Contains("error", StringComparison.OrdinalIgnoreCase)) return "失败";
@@ -66,7 +70,7 @@ internal static class HistoryPresentation
     }
 
     public static bool IsLocalFileAvailable(HistoryLocalRecord entry) =>
-        entry.LocalFileReferences.Values.Any(File.Exists);
+        entry.LocalFileReferences.Values.Any(p=>File.Exists(p)||Directory.Exists(p));
 }
 
 

@@ -300,7 +300,7 @@ class HistoryStore(filesDir: File, tempFileFactory: (() -> File)? = null, replac
     private fun fileToJson(file: HistoryFileMetadata): JSONObject = JSONObject()
         .put("name", file.name)
         .put("size", file.size)
-        .put("sha256", file.sha256)
+        .put("sha256", file.sha256).apply { file.relativePath?.let { put("relativePath",it) }; if(file.isDirectory) put("isDirectory",true) }
 
     private fun tombstoneToJson(tombstone: HistoryTombstone): JSONObject = JSONObject()
         .put("eventId", tombstone.eventId)
@@ -311,7 +311,7 @@ class HistoryStore(filesDir: File, tempFileFactory: (() -> File)? = null, replac
         val files = json.getJSONArray("files")
         val metadata = (0 until files.length()).map { index ->
             val item = files.getJSONObject(index)
-            HistoryFileMetadata(item.getString("name"), item.getLong("size"), item.getString("sha256"))
+            HistoryFileMetadata(item.getString("name"), item.getLong("size"), item.getString("sha256"),if(item.has("relativePath")) item.getString("relativePath") else null,item.optBoolean("isDirectory",false))
         }
         val textValue = json.opt("text")
         val text = if (textValue == null || textValue === JSONObject.NULL) null else textValue as String
