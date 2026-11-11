@@ -118,21 +118,35 @@ internal sealed class UpdateCardSurface : Control
         Invalidate();
     }
 
-    internal void ConfigureApplying()
+    internal void ConfigureRollback(string version, string notes, long packageSize)
+    {
+        ConfigureAvailable(version, notes, packageSize);
+        EyebrowText = "手动回退";
+        TitleText = "确认回退到 v" + Version;
+        SubtitleText = "当前 v" + UpdateProtocol.CurrentVersion.ToString(3) + "  →  v" + Version + "   ·   " + SizeText(packageSize);
+        FooterText = "只允许手动回退 · RSA 签名清单 · SHA-256 校验";
+        AccessibleName = "回退到 v" + Version;
+        AccessibleDescription = "确认回退到 v" + Version + "，回退包 " + SizeText(packageSize) + "，仍将验证签名和 SHA-256。" + NotesText;
+        RebuildChrome();
+        Invalidate();
+    }
+    internal void ConfigureApplying(bool isRollback = false, string version = "")
     {
         Mode = UpdateCardMode.Applying;
-        Version = "";
-        NotesText = "更新已完成下载和安全校验。\n现在正在替换文件并准备打开新版，请稍候。";
-        EyebrowText = "更新文件已验证";
-        TitleText = "正在安装更新";
-        SubtitleText = "请勿关闭窗口，完成后会自动打开 ClipBridge";
+        Version = version ?? "";
+        NotesText = isRollback
+            ? "更新已完成下载和安全校验。\n现在正在恢复所选历史版本，请稍候。"
+            : "更新已完成下载和安全校验。\n现在正在替换文件并准备打开新版，请稍候。";
+        EyebrowText = isRollback ? "回退文件已验证" : "更新文件已验证";
+        TitleText = isRollback ? "正在回退版本" : "正在安装更新";
+        SubtitleText = isRollback ? "请勿关闭窗口，完成后会打开 v" + Version : "请勿关闭窗口，完成后会自动打开 ClipBridge";
         ProgressVisible = true; Failed = false; Completed = false; SecurityVisible = false;
         ProgressLabel = "准备安装"; DetailsText = "正在等待当前版本安全退出…";
         _targetPercent = _displayPercent = 90;
         FooterText = "安装过程中会保留原版本备份";
         RebuildNoteLayout(); RebuildChrome();
-        AccessibleName = "软件更新安装程序";
-        AccessibleDescription = "正在安装已验证的更新，请稍候";
+        AccessibleName = isRollback ? "软件版本回退程序" : "软件更新安装程序";
+        AccessibleDescription = isRollback ? "正在安装已验证的历史版本回退 v" + Version + "，请稍候" : "正在安装已验证的更新，请稍候";
         Invalidate();
     }
 
@@ -154,19 +168,19 @@ internal sealed class UpdateCardSurface : Control
         Invalidate();
     }
 
-    internal void BeginDownload()
+    internal void BeginDownload(bool isRollback = false)
     {
         Failed = false; Completed = false; SecurityVisible = false; ProgressVisible = true;
-        EyebrowText = "正在更新"; TitleText = "正在下载更新"; SubtitleText = "下载会继续在后台进行，界面保持可操作";
+        EyebrowText = isRollback ? "正在回退" : "正在更新"; TitleText = isRollback ? "正在回退历史版本" : "正在下载更新"; SubtitleText = "下载会继续在后台进行，界面保持可操作";
         ProgressLabel = "下载进度"; DetailsText = "正在连接下载服务器…";
         _stage = UpdateStage.Downloading; _targetPercent = _displayPercent = 0;
-        FooterText = "下载完成后会校验签名，再自动安装";
+        FooterText = isRollback ? "历史版本下载完成后仍会校验签名，再执行回退" : "下载完成后会校验签名，再自动安装";
         RebuildChrome();
         StartAnimation();
         Invalidate();
     }
 
-    internal void Report(UpdateProgress value)
+    internal void Report(UpdateProgress value, bool isRollback = false)
     {
         Failed = false;
         Completed = value.Stage == UpdateStage.Completed;
@@ -184,7 +198,21 @@ internal sealed class UpdateCardSurface : Control
             UpdateStage.Restarting => "正在打开新版",
             _ => "更新完成"
         };
-        SubtitleText = Completed ? "新版已经打开，当前已是最新版本" : installing ? "请勿关闭窗口，完成后会自动打开" : "下载会继续在后台进行，界面保持可操作";
+        if (isRollback)
+        {
+            EyebrowText = Completed ? "版本回退完成" : "正在回退";
+            TitleText = value.Stage switch
+            {
+                UpdateStage.Downloading => "正在下载历史版本",
+                UpdateStage.Verifying => "正在校验回退包",
+                UpdateStage.Extracting => "正在准备历史版本",
+                UpdateStage.Waiting => "正在等待主程序退出",
+                UpdateStage.Installing => "正在回退应用文件",
+                UpdateStage.Restarting => "正在打开回退版本",
+                _ => "回退完成"
+            };
+        }
+        SubtitleText = isRollback ? Completed ? "已回退到 v" + Version : installing ? "请勿关闭窗口，完成后会打开 v" + Version : "下载会继续在后台进行，界面保持可操作" : Completed ? "新版已经打开，当前已是最新版本" : installing ? "请勿关闭窗口，完成后会自动打开" : "下载会继续在后台进行，界面保持可操作";
         ProgressLabel = value.Stage switch
         {
             UpdateStage.Downloading => "下载进度",
@@ -206,7 +234,7 @@ internal sealed class UpdateCardSurface : Control
             UpdateStage.Restarting => "正在等待新版主界面就绪，请稍候…",
             _ => "新版已启动，主界面已自动打开。"
         };
-        FooterText = Completed ? "更新完成 · 当前版本 v" + UpdateProtocol.CurrentVersion.ToString(3) : installing ? "安装过程中不会中断当前窗口" : "下载完成后会校验签名，再自动安装";
+        FooterText = isRollback ? Completed ? "已回退到 v" + Version : installing ? "安装过程中会保留当前版本备份" : "回退包将继续进行签名与完整性校验" : Completed ? "更新完成 · 当前版本 v" + UpdateProtocol.CurrentVersion.ToString(3) : installing ? "安装过程中不会中断当前窗口" : "下载完成后会校验签名，再自动安装";
         _targetPercent = Math.Clamp(value.OverallPercent, 0, 100);
         if (Completed) _displayPercent = 100;
         AccessibleDescription = string.Join("，", new[] { EyebrowText, TitleText, SubtitleText, ProgressLabel, $"{Math.Floor(_targetPercent):0}%", DetailsText }.Where(text => !string.IsNullOrWhiteSpace(text)));
@@ -214,14 +242,14 @@ internal sealed class UpdateCardSurface : Control
         Invalidate();
     }
 
-    internal void ShowFailure(string message)
+    internal void ShowFailure(string message, bool isRollback = false)
     {
         Failed = true; Completed = false; ProgressVisible = false; SecurityVisible = false;
         DetailsText = message ?? "";
-        EyebrowText = Mode == UpdateCardMode.Applying ? "安装未完成" : "更新未完成";
-        TitleText = Mode == UpdateCardMode.Applying ? "请重新打开应用" : "可以再试一次";
-        SubtitleText = Mode == UpdateCardMode.Applying ? "原版本已尝试恢复" : "当前版本仍可使用，没有任何改动";
-        FooterText = Mode == UpdateCardMode.Applying ? "重新打开 ClipBridge 即可继续使用" : "可以关闭窗口，稍后再试";
+        EyebrowText = isRollback ? "回退未完成" : Mode == UpdateCardMode.Applying ? "安装未完成" : "更新未完成";
+        TitleText = isRollback ? "可以重试回退" : Mode == UpdateCardMode.Applying ? "请重新打开应用" : "可以再试一次";
+        SubtitleText = isRollback ? "当前版本仍可使用，未完成回退" : Mode == UpdateCardMode.Applying ? "原版本已尝试恢复" : "当前版本仍可使用，没有任何改动";
+        FooterText = isRollback ? "可关闭窗口，稍后重试回退" : Mode == UpdateCardMode.Applying ? "重新打开 ClipBridge 即可继续使用" : "可以关闭窗口，稍后再试";
         _progressTimer.Stop();
         AccessibleDescription = string.Join("，", new[] { EyebrowText, TitleText, SubtitleText, message }.Where(text => !string.IsNullOrWhiteSpace(text)));
         RebuildChrome();
@@ -299,6 +327,13 @@ internal sealed class UpdateCardSurface : Control
     {
         base.OnSizeChanged(e);
         _scale = Math.Max(0.65f, Math.Min(Width / (float)LogicalWidth, Height / (float)(Mode == UpdateCardMode.Notice ? NoticeLogicalHeight : LogicalHeight)));
+        if (Width > 2 && Height > 2)
+        {
+            using var outline = VisualDrawing.RoundedRectangle(new RectangleF(0, 0, Width, Height), 24 * _scale);
+            Region? oldRegion = Region;
+            Region = new Region(outline);
+            oldRegion?.Dispose();
+        }
         RebuildNoteLayout();
         RebuildChrome();
     }
@@ -390,9 +425,7 @@ internal sealed class UpdateCardSurface : Control
         float radius = 24 * s;
         if (_backdrop != null)
         {
-            Rectangle src = Parent == null
-                ? new Rectangle(Point.Empty, Size)
-                : Parent.RectangleToClient(RectangleToScreen(ClientRectangle));
+            Rectangle src = Bounds;
             src.Intersect(new Rectangle(Point.Empty, _backdrop.Size));
             if (src.Width > 0 && src.Height > 0) g.DrawImage(_backdrop, new Rectangle(0, 0, Width, Height), src, GraphicsUnit.Pixel);
         }
@@ -401,38 +434,18 @@ internal sealed class UpdateCardSurface : Control
         using GraphicsPath glassPath = VisualDrawing.RoundedRectangle(outer, radius);
         GraphicsState state = g.Save();
         g.SetClip(glassPath);
-        Color veilTop = Ui.HeaderIsDark ? Color.FromArgb(236, 25, 34, 50) : Color.FromArgb(228, 250, 252, 255);
-        Color veilBottom = Ui.HeaderIsDark ? Color.FromArgb(222, 17, 24, 39) : Color.FromArgb(210, 226, 238, 250);
-        using (var veil = new LinearGradientBrush(outer, veilTop, veilBottom, 118f)) g.FillRectangle(veil, outer);
-        if (Ui.HeaderIsDark)
-        {
-            DrawGlow(g, new RectangleF(-Width * .22f, -Height * .12f, Width * .95f, Height * .72f), Color.FromArgb(32, 91, 126, 232));
-            DrawGlow(g, new RectangleF(Width * .42f, Height * .48f, Width * .8f, Height * .72f), Color.FromArgb(22, 36, 127, 156));
-        }
-        else
-        {
-            DrawGlow(g, new RectangleF(-Width * .28f, -Height * .18f, Width * 1.05f, Height * .76f), Color.FromArgb(36, 137, 158, 255));
-            DrawGlow(g, new RectangleF(Width * .36f, Height * .40f, Width * .86f, Height * .76f), Color.FromArgb(25, 116, 205, 241));
-            DrawGlow(g, new RectangleF(Width * .08f, Height * .62f, Width * .68f, Height * .62f), Color.FromArgb(18, 184, 165, 255));
-        }
-        RectangleF sheen = new(0, 0, Width, Height * .52f);
-        using (var gloss = new LinearGradientBrush(sheen, Color.FromArgb(Ui.HeaderIsDark ? 28 : 96, Color.White), Color.FromArgb(0, Color.White), LinearGradientMode.Vertical))
-            g.FillRectangle(gloss, sheen);
-        RectangleF diagonal = new(-Width * .2f, -Height * .12f, Width * .9f, Height * .5f);
-        using (var shine = new LinearGradientBrush(diagonal, Color.FromArgb(Ui.HeaderIsDark ? 20 : 78, Color.White), Color.FromArgb(0, Color.White), 118f))
-            g.FillRectangle(shine, diagonal);
+        Color veilTop = Ui.HeaderIsDark ? Color.FromArgb(247, 28, 37, 53) : Color.FromArgb(240, 250, 252, 255);
+        Color veilBottom = Ui.HeaderIsDark ? Color.FromArgb(250, 21, 29, 43) : Color.FromArgb(234, 237, 243, 251);
+        using (var veil = new LinearGradientBrush(outer, veilTop, veilBottom, 90f)) g.FillRectangle(veil, outer);
         g.Restore(state);
 
-        using (var rim = new Pen(Ui.HeaderIsDark ? Color.FromArgb(100, 214, 228, 255) : Color.FromArgb(232, 255, 255, 255), Math.Max(1f, 1.1f * s)))
+        using (var rim = new Pen(Ui.HeaderIsDark ? Color.FromArgb(52, 214, 228, 255) : Color.FromArgb(176, 255, 255, 255), Math.Max(0.8f, 0.9f * s)))
             VisualDrawing.DrawRoundedRectangle(g, rim, outer, radius);
-        RectangleF innerRim = RectangleF.Inflate(outer, -Math.Max(1f, 1.3f * s), -Math.Max(1f, 1.3f * s));
-        using (var rim = new Pen(Ui.HeaderIsDark ? Color.FromArgb(24, Color.White) : Color.FromArgb(58, 105, 129, 196), s))
-            VisualDrawing.DrawRoundedRectangle(g, rim, innerRim, Math.Max(0, radius - s));
 
         // Notes sit directly on the glass; one translucent inset keeps the
         // reading area separate without stacking another opaque card.
         RectangleF notes = L(24, Mode == UpdateCardMode.Notice ? 132 : 148, LogicalWidth - 48, Mode == UpdateCardMode.Notice ? 84 : 130);
-        using (var fill = new LinearGradientBrush(notes, Ui.HeaderIsDark ? Color.FromArgb(72, Color.White) : Color.FromArgb(112, Color.White), Ui.HeaderIsDark ? Color.FromArgb(48, Color.White) : Color.FromArgb(78, Color.White), 105f))
+        using (var fill = new SolidBrush(Ui.HeaderIsDark ? Color.FromArgb(30, 40, 56) : Color.FromArgb(210, Color.White)))
             VisualDrawing.FillRoundedRectangle(g, fill, notes, 14 * s);
         using (var edge = new Pen(Ui.HeaderIsDark ? Color.FromArgb(34, Color.White) : Color.FromArgb(110, Color.White), s))
             VisualDrawing.DrawRoundedRectangle(g, edge, notes, 14 * s);
@@ -442,25 +455,20 @@ internal sealed class UpdateCardSurface : Control
             if (SecurityVisible && !ProgressVisible)
             {
                 RectangleF security = L(24, 304, LogicalWidth - 48, 42);
-                using var fill = new SolidBrush(Ui.HeaderIsDark ? Color.FromArgb(76, Color.White) : Color.FromArgb(96, Color.White));
+                using var fill = new SolidBrush(Ui.HeaderIsDark ? Color.FromArgb(8, Color.White) : Color.FromArgb(50, Color.White));
                 VisualDrawing.FillRoundedRectangle(g, fill, security, 12 * s);
-                using var edge = new Pen(Ui.HeaderIsDark ? Color.FromArgb(68, Color.White) : Color.FromArgb(144, Color.White), s);
+                using var edge = new Pen(Ui.HeaderIsDark ? Color.FromArgb(26, Color.White) : Color.FromArgb(85, Color.White), s);
                 VisualDrawing.DrawRoundedRectangle(g, edge, security, 12 * s);
             }
             using var divider = new Pen(Ui.HeaderIsDark ? Color.FromArgb(40, Color.White) : Color.FromArgb(88, 255, 255, 255), s);
             g.DrawLine(divider, 24 * s, 292 * s, (LogicalWidth - 24) * s, 292 * s);
-            RectangleF track = L(24, 346, LogicalWidth - 48, 5);
-            using var groove = new SolidBrush(Ui.HeaderIsDark ? Color.FromArgb(38, Color.White) : Color.FromArgb(28, 42, 66, 112));
-            VisualDrawing.FillRoundedRectangle(g, groove, track, 2.5f * s);
+            if (ProgressVisible)
+            {
+                RectangleF track = L(24, 346, LogicalWidth - 48, 5);
+                using var groove = new SolidBrush(Ui.HeaderIsDark ? Color.FromArgb(38, Color.White) : Color.FromArgb(28, 42, 66, 112));
+                VisualDrawing.FillRoundedRectangle(g, groove, track, 2.5f * s);
+            }
         }
-    }
-
-    private static void DrawGlow(Graphics g, RectangleF bounds, Color color)
-    {
-        using var ellipse = new GraphicsPath();
-        ellipse.AddEllipse(bounds);
-        using var glow = new PathGradientBrush(ellipse) { CenterColor = color, SurroundColors = new[] { Color.Transparent } };
-        g.FillPath(glow, ellipse);
     }
 
     protected override void OnPaintBackground(PaintEventArgs e) { }
@@ -550,7 +558,7 @@ internal sealed class UpdateCardSurface : Control
     {
         RectangleF notes = L(24, Mode == UpdateCardMode.Notice ? 132 : 148, LogicalWidth - 48, Mode == UpdateCardMode.Notice ? 84 : 130);
         float titleY = notes.Y + 11 * s;
-        TextRenderer.DrawText(g, Failed && Mode == UpdateCardMode.Notice ? "检查详情" : "本次更新", _notesTitleFont, new Rectangle((int)(notes.X + 15 * s), (int)titleY, (int)(notes.Width - 30 * s), (int)(18 * s)), body, TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.SingleLine | TextFormatFlags.NoPadding);
+        TextRenderer.DrawText(g, Mode == UpdateCardMode.Notice ? "检查结果" : "本次更新", _notesTitleFont, new Rectangle((int)(notes.X + 15 * s), (int)titleY, (int)(notes.Width - 30 * s), (int)(18 * s)), body, TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.SingleLine | TextFormatFlags.NoPadding);
         if (!Failed && Mode != UpdateCardMode.Notice && _noteItems.Count > 0)
         {
             string count = _noteItems.Count + " 项改进";
@@ -570,7 +578,7 @@ internal sealed class UpdateCardSurface : Control
         {
             using (var dot = new SolidBrush(Ui.HeaderIsDark ? Color.FromArgb(146, 167, 255) : Color.FromArgb(98, 122, 233)))
                 g.FillEllipse(dot, viewport.X + 1 * s, y + _noteFont.Height * 0.44f, 4.2f * s, 4.2f * s);
-            TextRenderer.DrawText(g, text, _noteFont, new Rectangle((int)(viewport.X + 13 * s), (int)y, (int)(viewport.Width - 13 * s), height), body, TextFormatFlags.WordBreak | TextFormatFlags.NoPadding);
+            TextRenderer.DrawText(g, text, _noteFont, new Rectangle((int)(viewport.X + 13 * s), (int)y, (int)(viewport.Width - 13 * s), height), body, TextFormatFlags.WordBreak | TextFormatFlags.NoPadding | TextFormatFlags.PreserveGraphicsClipping);
             y += height + 6.5f * s;
         }
         g.Restore(state);

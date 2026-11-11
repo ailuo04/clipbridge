@@ -18,7 +18,7 @@ internal sealed class HistoryEntryControl : UserControl
     private readonly Label? _files;
     private readonly Label? _icon;
     private readonly PictureBox? _preview;
-    private readonly ContextMenuStrip _menu = new();
+    private readonly RoundedContextMenuStrip _menu = new();
     private Point _dragStart;
     private bool _sizing;
     public event Action<HistoryLocalRecord>? DeleteRequested;

@@ -18,9 +18,12 @@ internal static class Program
         string? root = Environment.GetEnvironmentVariable("CLIPBRIDGE_SMOKE_ROOT");
         if (args.Length > 0 && args[0] == "--apply-update") return UpdateExperienceSmoke.Apply(args, root!);
         if (args.Length > 0 && args[0] == "--verify-helper") return await VerifyHelperAsync();
+        if (args.Length > 0 && args[0] == "--verify-helper-rollback") return await VerifyHelperAsync(rollback: true);
         if (args.Length > 0 && args[0] == "--verify-rollback") { await UpdateExperienceSmoke.VerifyRollbackAsync(); return 0; }
+        if (args.Length > 0 && args[0] == "--verify-manifest") { UpdateExperienceSmoke.VerifyManifest(); return 0; }
+        if (args.Length > 0 && args[0] == "--verify-catalog") { await GitHubReleaseCatalogSmoke.VerifyAsync(); return 0; }
         if (args.Length > 0 && args[0] == "--verify-experience") { await UpdateExperienceSmoke.RunAsync(); return 0; }
-        if (args.Length == 2 && args[0] == "--spawn-helper") { SelfUpdate.LaunchUpdater(args[1], root!); return 0; }
+        if (args.Length >= 2 && args[0] == "--spawn-helper") { SelfUpdate.LaunchUpdater(args[1], root!, isRollback: args.Length >= 3, rollbackVersion: args.Length >= 3 ? args[2] : null); return 0; }
         if (args.Length > 0 && args[0] == "--begin")
         {
             AvailableUpdate update = await UpdateProtocol.CheckAsync(CancellationToken.None)
@@ -45,7 +48,7 @@ internal static class Program
         return 0;
     }
 
-    private static async Task<int> VerifyHelperAsync()
+    private static async Task<int> VerifyHelperAsync(bool rollback = false)
     {
         string root = Path.Combine(Path.GetTempPath(), "clipbridge-helper-smoke-" + Guid.NewGuid().ToString("N"));
         string install = Path.Combine(root, "install"), stage = Path.Combine(root, "stage"), data = Path.Combine(root, "data");
@@ -64,6 +67,7 @@ internal static class Program
         string progressFile = Path.Combine(root, "progress.txt");
         var start = new ProcessStartInfo(Path.Combine(install, "ClipBridge.exe")) { UseShellExecute = false, CreateNoWindow = true, WorkingDirectory = install };
         start.ArgumentList.Add("--spawn-helper"); start.ArgumentList.Add(stage);
+        if (rollback) start.ArgumentList.Add("0.5.4");
         foreach (string secret in new[] { "GITHUB_TOKEN", "CLIPBRIDGE_UPDATE_PRIVATE_KEY", "CLIPBRIDGE_ANDROID_KEYSTORE_BASE64", "CLIPBRIDGE_ANDROID_KEYSTORE_PASSWORD", "CLIPBRIDGE_ANDROID_KEYSTORE_PATH" }) start.Environment.Remove(secret);        start.Environment["CLIPBRIDGE_SMOKE_ROOT"] = data; start.Environment["CLIPBRIDGE_SMOKE_MARKER"] = marker; start.Environment["CLIPBRIDGE_SMOKE_PROGRESS"] = progressFile;
         using var child = Process.Start(start) ?? throw new Exception("Could not start synthetic update client");
         await child.WaitForExitAsync();
@@ -79,7 +83,9 @@ internal static class Program
         if (!File.Exists(Path.Combine(helper, "ClipBridge.deps.json"))) throw new Exception("Standalone helper did not copy the dependency manifest");
         if (!File.Exists(marker)) throw new Exception("Standalone helper did not restart the synthetic client");
         string[] restartArgs = File.ReadAllLines(marker + ".args");
-        if (!Array.Exists(restartArgs, arg => arg == "--updated")) throw new Exception("FAIL updater does not request that the new control panel opens automatically");
+        if (!Array.Exists(restartArgs, arg => arg == "--updated")) throw new Exception("FAIL updater does not request that the selected application version opens automatically");
+        int rollbackVersionIndex = Array.IndexOf(restartArgs, "--rollback-version");
+        if (rollback != (rollbackVersionIndex >= 0 && rollbackVersionIndex + 1 < restartArgs.Length && restartArgs[rollbackVersionIndex + 1] == "0.5.4")) throw new Exception("FAIL updater rollback target propagation does not match the selected operation");
         if (!Array.Exists(restartArgs, arg => arg == "--update-ready")) throw new Exception("FAIL updater does not wait for startup confirmation");
         while ((!File.Exists(progressFile) || !File.ReadAllText(progressFile).Contains("Completed 100")) && watch.Elapsed < TimeSpan.FromSeconds(20)) await Task.Delay(50);
         if (!File.Exists(progressFile) || !File.ReadAllText(progressFile).Contains("Completed 100")) throw new Exception("Helper did not complete after startup confirmation");

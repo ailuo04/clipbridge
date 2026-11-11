@@ -12,7 +12,7 @@ namespace ClipBridge.Windows;
 
 internal static class SelfUpdate
 {
-	private sealed record UpdateOptions(int ProcessId, string Source, string Target, string DotnetPath);
+	private sealed record UpdateOptions(int ProcessId, string Source, string Target, string DotnetPath, bool IsRollback, string? RollbackVersion);
 
 	internal const string ApplyArgument = "--apply-update";
 
@@ -86,13 +86,16 @@ internal static class SelfUpdate
 
     internal static void DiscardStagedPackage(string stagedDirectory, string appDataRoot) => TryCleanStagedSource(stagedDirectory, appDataRoot);
 
-	internal static void LaunchUpdater(string stagedDirectory)
+	internal static void LaunchUpdater(string stagedDirectory, bool isRollback = false, string? rollbackVersion = null)
 	{
-		LaunchUpdater(stagedDirectory, AppDataRoot);
+		LaunchUpdater(stagedDirectory, AppDataRoot, isRollback, rollbackVersion);
 	}
 
-	internal static void LaunchUpdater(string stagedDirectory, string appDataRoot)
+	internal static void LaunchUpdater(string stagedDirectory, string appDataRoot, bool isRollback = false, string? rollbackVersion = null)
 	{
+        if (isRollback && (!Version.TryParse(rollbackVersion, out Version? selectedVersion) || selectedVersion >= UpdateProtocol.CurrentVersion))
+            throw new UpdateProtocolException("所选历史版本无效或不是旧版本");
+        if (!isRollback) rollbackVersion = null;
 		string text = AppContext.BaseDirectory.TrimEnd(Path.DirectorySeparatorChar);
 		string location = Assembly.GetExecutingAssembly().Location;
 		string text2 = Path.Combine(text, "ClipBridge.runtimeconfig.json");
@@ -117,7 +120,7 @@ internal static class SelfUpdate
 		{
 			throw new UpdateProtocolException("无法找到 .NET 运行环境，更新未安装");
 		}
-		if (Process.Start(new ProcessStartInfo(text5)
+		var updaterStart = new ProcessStartInfo(text5)
 		{
 			UseShellExecute = false,
 			WorkingDirectory = text3,
@@ -133,9 +136,17 @@ internal static class SelfUpdate
 				"--target",
 				text,
 				"--dotnet",
-				text5
+				text5,
+                "--rollback",
+                isRollback.ToString()
 			}
-		}) == null)
+		};
+        if (rollbackVersion != null)
+        {
+            updaterStart.ArgumentList.Add("--rollback-version");
+            updaterStart.ArgumentList.Add(rollbackVersion);
+        }
+        if (Process.Start(updaterStart) == null)
 		{
 			throw new UpdateProtocolException("无法启动更新辅助进程");
 		}
@@ -224,6 +235,11 @@ internal static class SelfUpdate
         string eventName = "Local\\ClipBridge.UpdateReady." + Guid.NewGuid().ToString("N");
         using var ready = new EventWaitHandle(false, EventResetMode.ManualReset, eventName);
         var start = CreateRestartInfo(options, "--updated");
+        if (options.RollbackVersion != null)
+        {
+            start.ArgumentList.Add("--rollback-version");
+            start.ArgumentList.Add(options.RollbackVersion);
+        }
         start.ArgumentList.Add("--update-ready"); start.ArgumentList.Add(eventName);
         using Process process = Process.Start(start) ?? throw new UpdateProtocolException("无法重新启动 ClipBridge");
         var watch = Stopwatch.StartNew();
@@ -277,38 +293,36 @@ internal static class SelfUpdate
         cancellationToken.ThrowIfCancellationRequested();
     }
 
-	private static UpdateOptions ParseArguments(string[] args)
+		private static UpdateOptions ParseArguments(string[] args)
 	{
-		string? s = null;
-		string? text = null;
-		string? text2 = null;
-		string? text3 = null;
+		string? pid = null;
+		string? source = null;
+		string? target = null;
+		string? dotnet = null;
+        bool isRollback = false;
+        string? rollbackVersion = null;
 		for (int i = 1; i < args.Length - 1; i += 2)
 		{
 			switch (args[i])
 			{
-			case "--pid":
-				s = args[i + 1];
-				break;
-			case "--source":
-				text = args[i + 1];
-				break;
-			case "--target":
-				text2 = args[i + 1];
-				break;
-			case "--dotnet":
-				text3 = args[i + 1];
-				break;
+			case "--pid": pid = args[i + 1]; break;
+			case "--source": source = args[i + 1]; break;
+			case "--target": target = args[i + 1]; break;
+			case "--dotnet": dotnet = args[i + 1]; break;
+			case "--rollback": if (!bool.TryParse(args[i + 1], out isRollback)) throw new ArgumentException("更新回退参数无效"); break;
+            case "--rollback-version": rollbackVersion = args[i + 1]; break;
 			}
 		}
-		if (!int.TryParse(s, out var result) || text == null || text2 == null || text3 == null)
+		if (!int.TryParse(pid, out int processId) || source == null || target == null || dotnet == null)
 		{
 			throw new ArgumentException("更新辅助进程参数无效");
 		}
-		return new UpdateOptions(result, text, text2, text3);
+        if (isRollback && (!Version.TryParse(rollbackVersion, out Version? selectedVersion) || selectedVersion >= UpdateProtocol.CurrentVersion))
+            throw new ArgumentException("更新回退目标版本无效");
+        if (!isRollback && rollbackVersion != null) throw new ArgumentException("普通更新不能携带回退版本");
+		return new UpdateOptions(processId, source, target, dotnet, isRollback, rollbackVersion);
 	}
-
-	private static void WaitForProcessExit(int processId, TimeSpan timeout)
+private static void WaitForProcessExit(int processId, TimeSpan timeout)
 	{
 		try
 		{

@@ -72,6 +72,7 @@ internal sealed class TrayAppContext : ApplicationContext
 
     private UpdateDialog? _updateDialog;
     private CancellationTokenSource? _updateDownload;
+    private CancellationTokenSource? _rollbackLoadCancellation;
 
 	public TrayAppContext(EventWaitHandle activation)
 	{
@@ -179,13 +180,15 @@ internal sealed class TrayAppContext : ApplicationContext
     private WorkspaceForm CreateWorkspace()
     {
         var page=new DevicesView(_devices);
-        return new WorkspaceForm(_history,_devices.DeviceId,WorkspacePeers,
+        var workspace = new WorkspaceForm(_history,_devices.DeviceId,WorkspacePeers,
             (peer,text,token)=>_node.SendTextAsync(IPAddress.Parse(peer.Address),text,token,expectedPeerId:peer.PeerId),
             (peer,paths,token)=>_files.SendAsync(IPAddress.Parse(peer.Address),paths,token,expectedPeerId:peer.PeerId),
             OpenReceiveDirectory,id=>_devices.Revoke(id),()=>_ = CheckForUpdatesAsync(true),ChangeTheme,page,
             Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),"ClipBridge","workspace.json"));
-    }
-    private void OpenConversation(string? peerId=null){_panel.OpenConversation(peerId);}
+        workspace.RollbackRequested += () => _ = LoadRollbackVersionsAsync(workspace);
+        workspace.RollbackTargetRequested += PromptForRollback;
+        return workspace;
+    }    private void OpenConversation(string? peerId=null){_panel.OpenConversation(peerId);}
     private void OpenConversationOrPanel(){_panel.ShowControlPanel();}
 
 private void OpenReceiveDirectory()
@@ -278,7 +281,7 @@ private void OpenReceiveDirectory()
 
 	private async Task CheckForUpdatesAsync(bool manual)
 	{
-		if (_exiting || Volatile.Read(ref _updateInstalling) != 0 || Interlocked.Exchange(ref _updateCheckRunning, 1) != 0)
+		if (_exiting || Volatile.Read(ref _updateInstalling) != 0 || Interlocked.CompareExchange(ref _updateCheckRunning, 1, 0) != 0)
 		{
 			return;
 		}
@@ -288,13 +291,14 @@ private void OpenReceiveDirectory()
 		});
 		try
 		{
-			AvailableUpdate update = await UpdateProtocol.CheckAsync(_updateLifetime.Token);
+			AvailableUpdate? update = await UpdateProtocol.CheckAsync(_updateLifetime.Token);
 			Dispatch(() =>
 			{
 				if (!_exiting)
 				{
-					if ((object)update == null)
+					if (update == null)
 					{
+						_panel.SetUpdateAvailable(null, null);
 						if (manual)
 						{
 							UpdateDialog.ShowNotice(_panel, "已是最新版本", "当前已经是最新版本，无需安装更新。");
@@ -302,8 +306,8 @@ private void OpenReceiveDirectory()
 					}
 					else
 					{
+						_panel.SetUpdateAvailable(update.Version, () => PromptForUpdate(update));
 						if (manual) PromptForUpdate(update);
-                        else ReportStatus("发现新版本 " + update.Version + "，可在控制面板主动检查更新");
 					}
 				}
 			});
@@ -320,6 +324,7 @@ private void OpenReceiveDirectory()
 				if (!_exiting)
 				{
 					ReportStatus("更新检查失败");
+                    _panel.SetUpdateStatus(UpdateSidebarState.Failed, ex4.Message);
 					if (manual)
 					{
 						UpdateDialog.ShowNotice(_panel, "更新检查未完成", ex4.Message, error: true);
@@ -337,11 +342,52 @@ private void OpenReceiveDirectory()
 		}
 	}
 
+    private async Task LoadRollbackVersionsAsync(WorkspaceForm workspace)
+    {
+        if (_exiting || Volatile.Read(ref _updateInstalling) != 0) return;
+        if (Interlocked.CompareExchange(ref _updateCheckRunning, 1, 0) != 0)
+        {
+            workspace.SetRollbackLoading(false, "当前有其他更新操作正在进行，请稍后重试。");
+            return;
+        }
+        _rollbackLoadCancellation?.Cancel();
+        _rollbackLoadCancellation?.Dispose();
+        var cancellation = CancellationTokenSource.CreateLinkedTokenSource(_updateLifetime.Token);
+        _rollbackLoadCancellation = cancellation;
+        workspace.SetRollbackLoading(true);
+        try
+        {
+            using var catalog = new GitHubReleaseCatalog();
+            var candidates = await catalog.LoadAsync(UpdateProtocol.CurrentVersion, cancellation.Token).ConfigureAwait(false);
+            Dispatch(() => { if (!_exiting && !workspace.IsDisposed) workspace.SetRollbackCandidates(candidates); });
+        }
+        catch (OperationCanceledException) when (cancellation.IsCancellationRequested) { }
+        catch (Exception error)
+        {
+            Dispatch(() => { if (!_exiting && !workspace.IsDisposed) workspace.SetRollbackLoading(false, "读取 GitHub 发布版本失败：" + error.Message); });
+        }
+        finally
+        {
+            if (ReferenceEquals(_rollbackLoadCancellation, cancellation)) _rollbackLoadCancellation = null;
+            cancellation.Dispose();
+            Interlocked.Exchange(ref _updateCheckRunning, 0);
+        }
+    }
+
+    private void PromptForRollback(AvailableUpdate update)
+    {
+        if (!update.IsRollback || !Version.TryParse(update.Version, out Version? version) || version >= UpdateProtocol.CurrentVersion)
+        {
+            UpdateDialog.ShowNotice(_panel, "无法回退", "所选版本未通过回退验证，请重新加载 GitHub 版本列表。", error: true);
+            return;
+        }
+        PromptForUpdate(update);
+    }
     private void PromptForUpdate(AvailableUpdate update)
     {
         _panel.ShowControlPanel();
         if (_updateDialog is { IsDisposed: false }) { _updateDialog.Show(); _updateDialog.Activate(); return; }
-        var dialog = new UpdateDialog(update.Version, update.Notes, update.Size);
+        var dialog = new UpdateDialog(update.Version, update.Notes, update.Size, isRollback: update.IsRollback);
         _updateDialog = dialog;
         dialog.InstallRequested += () => _ = DownloadAndInstallUpdateAsync(update, dialog);
         dialog.CancelRequested += () => _updateDownload?.Cancel();
@@ -356,12 +402,12 @@ private void OpenReceiveDirectory()
         using var cancellation = CancellationTokenSource.CreateLinkedTokenSource(_updateLifetime.Token);
         _updateDownload = cancellation;
         dialog.BeginDownload();
-        _panel.SetUpdateCheckState(enabled: false, "正在更新…");
+        _panel.SetUpdateStatus(UpdateSidebarState.Installing, update.IsRollback ? "正在回退到 v" + update.Version : "正在安装 v" + update.Version);
         var progress = new Progress<UpdateProgress>(value =>
         {
             if (!_exiting && !dialog.IsDisposed && !cancellation.IsCancellationRequested) dialog.Report(value);
         });
-        ReportStatus("正在下载更新 " + update.Version + "…");
+        ReportStatus((update.IsRollback ? "正在下载历史版本 " : "正在下载更新 ") + update.Version + "…");
         string? staged = null; bool handedOff = false;
         try
         {
@@ -370,21 +416,21 @@ private void OpenReceiveDirectory()
             if (_exiting) return;
             dialog.Report(new UpdateProgress(UpdateStage.Waiting));
             if(_files.IsBusy || _conversation?.HasActiveSends==true)throw new IOException("有新的传输正在进行，请传输完成后再安装。");
-            SelfUpdate.LaunchUpdater(staged);
+            SelfUpdate.LaunchUpdater(staged, isRollback: update.IsRollback, rollbackVersion: update.IsRollback ? update.Version : null);
             handedOff = true;
-            ReportStatus("更新已校验，独立安装窗口正在接管");
+            ReportStatus(update.IsRollback ? "历史版本已校验，独立安装窗口正在接管回退" : "更新已校验，独立安装窗口正在接管");
             dialog.Finish();
             ExitThread();
         }
         catch (OperationCanceledException) when (cancellation.IsCancellationRequested)
         {
-            if (!_exiting) { ReportStatus("已取消更新，当前版本可继续使用"); if (!dialog.IsDisposed) dialog.Finish(); }
+            if (!_exiting) { ReportStatus(update.IsRollback ? "已取消回退，当前版本可继续使用" : "已取消更新，当前版本可继续使用"); if (!dialog.IsDisposed) dialog.Finish(); }
         }
         catch (Exception ex)
         {
             if (!_exiting)
             {
-                ReportStatus("更新未完成：" + ex.Message);
+                ReportStatus((update.IsRollback ? "回退未完成：" : "更新未完成：") + ex.Message);
                 if (!dialog.IsDisposed) dialog.ShowFailure(ex.Message);
             }
         }
@@ -397,12 +443,15 @@ private void OpenReceiveDirectory()
         }
     }
 
-    internal void ShowAfterUpdate(bool rolledBack, Action ready)
+    internal void ShowAfterUpdate(bool rolledBack, Action ready, string? installedVersion = null)
     {
         Dispatch(() =>
         {
             _panel.ShowControlPanel();
-            ReportStatus(rolledBack ? "更新未完成，已尝试恢复原版本" : "更新完成，已自动打开主界面");
+            string message = !string.IsNullOrWhiteSpace(installedVersion)
+                ? "已回退到 v" + installedVersion + "，主界面已自动打开"
+                : rolledBack ? "更新未完成，已尝试恢复原版本" : "更新完成，已自动打开主界面";
+            ReportStatus(message);
             ready();
         });
     }

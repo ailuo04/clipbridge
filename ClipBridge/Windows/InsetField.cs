@@ -7,8 +7,11 @@ namespace ClipBridge.Windows;
 // Rounded read-only field backdrop for the local address list.
 internal sealed class InsetField : Panel
 {
-	public InsetField()
+	private readonly bool _showAccentRail;
+
+	public InsetField(bool showAccentRail = true)
 	{
+		_showAccentRail = showAccentRail;
 		SetStyle(ControlStyles.UserPaint | ControlStyles.ResizeRedraw | ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer, value: true);
 		BackColor = Ui.Surface;
 		Padding = new Padding(14, 10, 12, 8);
@@ -27,8 +30,10 @@ internal sealed class InsetField : Panel
 		{
 			VisualDrawing.DrawRoundedRectangle(e.Graphics, border, bounds, 10f);
 		}
-		// Accent rail on the left edge marks this as the "active" address.
-		using SolidBrush rail = new SolidBrush(Color.FromArgb(200, Ui.Accent));
-		VisualDrawing.FillRoundedRectangle(e.Graphics, rail, new RectangleF(6f, 12f, 3f, 16f), 1.5f);
+		if (_showAccentRail)
+		{
+			using SolidBrush rail = new SolidBrush(Color.FromArgb(200, Ui.Accent));
+			VisualDrawing.FillRoundedRectangle(e.Graphics, rail, new RectangleF(6f, 12f, 3f, 16f), 1.5f);
+		}
 	}
 }

@@ -2,12 +2,15 @@ using System;
 using System.Linq;
 using System.Reflection;
 using System.Linq.Expressions;
+using System.Runtime.InteropServices;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Windows.Forms;
 
 internal static class ConversationSmoke
 {
+    [DllImport("user32.dll")]
+    private static extern bool GetCaretPos(out System.Drawing.Point point);
     private static object? _fileTarget;
     private static string[]? _filePaths;
     private static bool _failFiles;
@@ -19,6 +22,15 @@ internal static class ConversationSmoke
     {
         if (!condition) throw new Exception("FAIL conversation: " + message);
         Console.WriteLine("PASS conversation: " + message);
+    }
+
+    private static void SaveWorkspace(Form workspace,string name)
+    {
+        using var image=new System.Drawing.Bitmap(workspace.Width,workspace.Height);
+        workspace.DrawToBitmap(image,new System.Drawing.Rectangle(System.Drawing.Point.Empty,image.Size));
+        string output=System.IO.Path.Combine(System.IO.Path.GetTempPath(),"clipbridge-ui-smoke",name+".png");
+        System.IO.Directory.CreateDirectory(System.IO.Path.GetDirectoryName(output)!);
+        image.Save(output,System.Drawing.Imaging.ImageFormat.Png);Console.WriteLine("SCREENSHOT "+output);
     }
 
     internal static void Run(Assembly app, bool capture = false)
@@ -155,6 +167,17 @@ internal static class ConversationSmoke
         {
             Control bubble = (Control)row.GetType().GetProperty("Bubble")!.GetValue(row)!;
             Check(bubble.ContextMenuStrip != null && bubble.ContextMenuStrip.Items.Count > 0, "message actions are available in a context menu");
+            Check(bubble.ContextMenuStrip!.GetType().Name=="RoundedContextMenuStrip", "message actions use the shared rounded menu surface");
+            bubble.ContextMenuStrip.Show(Cursor.Position); Application.DoEvents();
+            Check(bubble.ContextMenuStrip.Region != null, "message action popup applies its rounded window region");
+            if (capture)
+            {
+                using var menuImage=new System.Drawing.Bitmap(bubble.ContextMenuStrip.Width,bubble.ContextMenuStrip.Height);
+                bubble.ContextMenuStrip.DrawToBitmap(menuImage,new System.Drawing.Rectangle(System.Drawing.Point.Empty,menuImage.Size));
+                string menuPath=System.IO.Path.Combine(System.IO.Path.GetTempPath(),"clipbridge-ui-smoke","message-context-menu.png");
+                menuImage.Save(menuPath,System.Drawing.Imaging.ImageFormat.Png);Console.WriteLine("SCREENSHOT "+menuPath);
+            }
+            bubble.ContextMenuStrip.Close();
             bool outgoing = (bool)Field(row, "_outgoing")!;
             Check(outgoing ? Math.Abs(bubble.Right - ((Control)row).ClientSize.Width) <= 2 : bubble.Left == 0, outgoing ? "sent bubble is placed on the right" : "received bubble is placed on the left");
         }
@@ -236,30 +259,144 @@ internal static class ConversationSmoke
         Type workspaceType=app.GetType("ClipBridge.Windows.WorkspaceForm") ?? throw new Exception("Missing WorkspaceForm");
         Type themeMode=app.GetType("ClipBridge.Windows.UiThemeMode")!;
         var themeAction=Expression.Lambda(typeof(Action<>).MakeGenericType(themeMode),Expression.Empty(),Expression.Parameter(themeMode)).Compile();
+        int workspaceCheckCount=0; Action checkWorkspaceUpdate=()=>workspaceCheckCount++;
         Action<string> revoke=_=>{};
-        using(var workspace=(Form)Activator.CreateInstance(workspaceType,new object?[]{store,new string('a',32),peersProvider,sendText,preview,action,revoke,action,themeAction,null,null})!) {
+        using(var workspace=(Form)Activator.CreateInstance(workspaceType,new object?[]{store,new string('a',32),peersProvider,sendText,preview,action,revoke,checkWorkspaceUpdate,themeAction,null,null})!) {
             workspace.Show();Application.DoEvents();
             workspaceType.GetMethod("SelectConversation")!.Invoke(workspace,new object[]{"peer-a"});Application.DoEvents();
             var view=workspaceType.GetProperty("Conversation")!.GetValue(workspace)!;
             var editor=(TextBox)workspace.Controls.Find("ConversationComposer",true).Single();
+            editor.Focus(); Application.DoEvents();
+            Check(GetCaretPos(out var caret),"composer exposes a focused insertion caret for vertical alignment");
+            int caretCenterY=editor.PointToScreen(caret).Y+editor.Font.Height/2;
+            int fieldCenterY=editor.Parent!.PointToScreen(System.Drawing.Point.Empty).Y+editor.Parent.Height/2;
+            Check(Math.Abs(caretCenterY-fieldCenterY)<=3,"input caret sits at the center of its rounded field");
+            Check(editor.Parent!.Padding.Top>editor.Parent.Padding.Bottom,"composer text baseline is shifted down to the field's visual center");
+            var fieldSurface=(System.Drawing.Color)app.GetType("ClipBridge.Windows.Ui")!.GetField("FieldSurface",BindingFlags.Static|BindingFlags.NonPublic)!.GetValue(null)!;
+            Check(editor.BackColor.ToArgb()==fieldSurface.ToArgb(),"composer editor is visually inset from the file toolbar");
+            bool HasText(Control control,string text)=>control.Text==text||control.Controls.Cast<Control>().Any(child=>HasText(child,text));
+            Check(!HasText(workspace,"Enter 发送 · Shift + Enter 换行 · 原文件") && !workspace.Controls.Find("ConversationFooter",true).Any(),"composer and conversation footer omit redundant helper copy");
+            var inputSurface=workspace.Controls.Find("ConversationInputSurface",true).Single();
+            var composerLayout=inputSurface.Controls.Cast<Control>().Single();
+            var composerTools=composerLayout.Controls[0];
+            var surfaceFill=(System.Drawing.Color)inputSurface.GetType().GetProperty("FillColor")!.GetValue(inputSurface)!;
+            Check(composerTools.BackColor.ToArgb()==surfaceFill.ToArgb(),"composer toolbar matches its rounded surface instead of exposing the canvas");
             Check(workspace.Controls.Find("ConversationPeerSelector",true).Length==0,"workspace switches devices only from sidebar");
+            var addDevice=workspace.Controls.Find("WorkspaceAddDevice",true).Single();
+            var addDeviceCell=addDevice.Parent!;
+            Check(addDevice.Left>=0 && addDevice.Right<=addDeviceCell.ClientSize.Width,"add-device button stays inside the sidebar width");
             Check(workspace.Controls.Find("WorkspacePeer-peer-a",true).Length==1 && workspace.Controls.Find("WorkspacePeer-peer-b",true).Length==1,"workspace lists independent conversations");
+            var accent=(System.Drawing.Color)app.GetType("ClipBridge.Windows.Ui")!.GetField("Accent",BindingFlags.Static|BindingFlags.NonPublic)!.GetValue(null)!;
+            var muted=(System.Drawing.Color)app.GetType("ClipBridge.Windows.Ui")!.GetField("Muted",BindingFlags.Static|BindingFlags.NonPublic)!.GetValue(null)!;
+            System.Drawing.Color GlyphColor(string name)=>(System.Drawing.Color)workspace.Controls.Find(name,true).Single().GetType().GetProperty("GlyphColor")!.GetValue(workspace.Controls.Find(name,true).Single())!;
+            Check(GlyphColor("WorkspaceReceiveFolder")==accent && GlyphColor("WorkspaceSettings")==muted && workspace.Controls.Find("WorkspaceUpdates",true).Single().GetType().GetProperty("Tone")!.GetValue(workspace.Controls.Find("WorkspaceUpdates",true).Single())!.ToString()=="Secondary","sidebar destinations distinguish folder/settings icons and emphasize the update pill");
+            var sidebarBottom=(TableLayoutPanel)workspace.Controls.Find("WorkspaceSettings",true).Single().Parent!;
+            int Row(Control control)=>sidebarBottom.GetPositionFromControl(control).Row;
+            Check(Row(workspace.Controls.Find("WorkspaceUpdates",true).Single()) < Row(workspace.Controls.Find("WorkspaceReceiveFolder",true).Single()) && Row(workspace.Controls.Find("WorkspaceReceiveFolder",true).Single()) < Row(workspace.Controls.Find("WorkspaceSettings",true).Single()),"update, receive-folder and settings controls have the requested bottom-up hierarchy");
+            workspaceType.GetMethod("SetUpdateStatus")!.Invoke(workspace,new[]{Enum.Parse(app.GetType("ClipBridge.Windows.UpdateSidebarState")!,"Latest"),null});
+            var latestControl=(Button)workspace.Controls.Find("WorkspaceUpdates",true).Single();
+            Check(latestControl.Text=="当前为最新版" && latestControl.ClientSize.Height>=36,"latest state is a visible pill control with an explicit status");
+            latestControl.PerformClick();
+            Check(workspaceCheckCount==1,"latest-state pill triggers the shared update check");
+            workspaceType.GetMethod("SetUpdateStatus")!.Invoke(workspace,new[]{Enum.Parse(app.GetType("ClipBridge.Windows.UpdateSidebarState")!,"Checking"),null});
+            Check(!latestControl.Enabled && latestControl.Text.Contains("检查中"),"checking state prevents duplicate checks");
+            workspaceType.GetMethod("SetUpdateStatus")!.Invoke(workspace,new[]{Enum.Parse(app.GetType("ClipBridge.Windows.UpdateSidebarState")!,"Failed"),"网络暂时不可用"});
+            Check(latestControl.Enabled && latestControl.Text.Contains("重试"),"failed state remains a retryable, non-latest status");
+            latestControl.PerformClick();
+            Check(workspaceCheckCount==2,"failed-state pill retries the same update check");
+            workspaceType.GetMethod("ShowSettings",BindingFlags.Instance|BindingFlags.NonPublic)!.Invoke(workspace,null);
+            Check(workspace.Controls.Find("WorkspaceCheckUpdate",true).Length==1 && workspace.Controls.Find("WorkspaceRollbackHistory",true).Length==1,"settings exposes backup check and rollback entries");
+            Check(Row(workspace.Controls.Find("WorkspaceReceiveFolder",true).Single())<Row(workspace.Controls.Find("WorkspaceNavSeparator",true).Single()) && Row(workspace.Controls.Find("WorkspaceNavSeparator",true).Single())<Row(workspace.Controls.Find("WorkspaceSettings",true).Single()),"settings and receive-folder destinations are visually separated");
+            workspaceType.GetMethod("SetUpdateCheckState")!.Invoke(workspace,new object[]{false,"检查中..."});
+            Check(!((Button)workspace.Controls.Find("WorkspaceCheckUpdate",true).Single()).Enabled,"settings backup check shares active update state");
+            workspaceType.GetMethod("SetUpdateCheckState")!.Invoke(workspace,new object[]{true,"检查更新"});
+            int rollbackOpenCount=0;
+            workspaceType.GetEvent("RollbackRequested")!.AddEventHandler(workspace,new Action(()=>rollbackOpenCount++));
+            ((Button)workspace.Controls.Find("WorkspaceRollbackHistory",true).Single()).PerformClick();
+            Check(rollbackOpenCount==1,"settings history entry requests GitHub rollback history");
+            Type availableType=app.GetType("ClipBridge.Windows.AvailableUpdate")!;
+            Type candidateType=app.GetType("ClipBridge.Windows.GitHubRollbackCandidate")!;
+            object validRollback=Activator.CreateInstance(availableType,new object?[]{"0.5.4","https://raw.githubusercontent.com/ailuo04/clipbridge/master/ClipBridge-0.5.4-win-x64.zip",531856L,new string('a',64),"测试回退",true})!;
+            object validCandidate=Activator.CreateInstance(candidateType,new object?[]{"v0.5.4",DateTimeOffset.UtcNow,false,validRollback,null})!;
+            object disabledCandidate=Activator.CreateInstance(candidateType,new object?[]{"v0.5.3",DateTimeOffset.UtcNow,true,null,"签名清单不可用"})!;
+            Array rollbackCandidates=Array.CreateInstance(candidateType,2);rollbackCandidates.SetValue(validCandidate,0);rollbackCandidates.SetValue(disabledCandidate,1);
+            workspaceType.GetMethod("SetRollbackCandidates",BindingFlags.Instance|BindingFlags.NonPublic)!.Invoke(workspace,new object[]{rollbackCandidates});
+            var validRow=(Button)workspace.Controls.Find("WorkspaceRollbackItem-v0.5.4",true).Single();
+            var disabledRow=(Button)workspace.Controls.Find("WorkspaceRollbackItem-v0.5.3",true).Single();
+            Check(validRow.Enabled && validRow.Text.Contains("v0.5.4") && disabledRow.Text.Contains("预发布") && disabledRow.Text.Contains("签名清单不可用") && !disabledRow.Enabled,"history list shows signed targets, prereleases and the visible unavailable reason");
+            workspaceType.GetMethod("ApplyTheme")!.Invoke(workspace,new[]{Enum.Parse(themeMode,"Dark")});
+            Check(workspace.Controls.Find("WorkspaceRollbackItem-v0.5.3",true).Length==1,"rollback candidate list survives a theme switch");
+            int selectedRollbackCount=0;
+            workspaceType.GetEvent("RollbackTargetRequested")!.AddEventHandler(workspace,new Action<object>(_=>selectedRollbackCount++));
+            validRow.PerformClick();
+            Check(selectedRollbackCount==1,"selecting a verified historical version opens the rollback confirmation flow");
+            int updateOpenCount=0;
+            workspaceType.GetMethod("SetUpdateAvailable")!.Invoke(workspace,new object[]{"0.5.8",new Action(()=>updateOpenCount++)});
+            var updateNotice=(Button)workspace.Controls.Find("WorkspaceUpdateNowButton",true).Single();
+            Check(updateNotice.Visible && updateNotice.Text=="立即更新" && workspace.Controls.Find("WorkspaceAvailableVersion",true).Single().Text.Contains("0.5.8"),"new version is shown as an accented sidebar update control");
+            updateNotice.PerformClick();
+            Check(updateOpenCount==1,"sidebar update control opens the existing update flow");
             Check(workspace.Controls.Find("ConversationPasteButton",true).Length==0,"composer has one attachment entry");
+            var transition=workspace.Controls.Find("WorkspacePageTransition",true).Single();
+            var initialSettle=System.Diagnostics.Stopwatch.StartNew(); while(transition.Visible && initialSettle.ElapsedMilliseconds<1000){Application.DoEvents();Thread.Sleep(5);}
+            Check(transition.GetType().Name=="PageTransitionOverlay" && !transition.Visible,"page cross-fade overlay is idle until navigation");
+            workspaceType.GetMethod("ShowSettings",BindingFlags.Instance|BindingFlags.NonPublic)!.Invoke(workspace,null);
+            for(int frame=0;frame<6;frame++)
+            {
+                if(capture)
+                {
+                    Console.WriteLine("TRANSITION frame "+frame+" visible="+transition.Visible);if(!transition.Visible) break;
+                    using var shot=new System.Drawing.Bitmap(transition.Width,transition.Height);
+                    transition.DrawToBitmap(shot,new System.Drawing.Rectangle(System.Drawing.Point.Empty,shot.Size));
+                    string framePath=System.IO.Path.Combine(System.IO.Path.GetTempPath(),"clipbridge-ui-smoke","workspace-transition-"+frame+".png");
+                    System.IO.Directory.CreateDirectory(System.IO.Path.GetDirectoryName(framePath)!);shot.Save(framePath);Console.WriteLine("SCREENSHOT "+framePath);
+                }
+                var step=System.Diagnostics.Stopwatch.StartNew();while(step.ElapsedMilliseconds<45){Application.DoEvents();Thread.Sleep(5);}
+            }
+            var settle=System.Diagnostics.Stopwatch.StartNew();while(transition.Visible&&settle.ElapsedMilliseconds<1000){Application.DoEvents();Thread.Sleep(5);}
+            Check(!transition.Visible,"page cross-fade hands over to the live page");
+            var contentArea=workspace.Controls.Find("WorkspaceContent",true).Single();
+            var statusStrip=contentArea.Controls.OfType<Label>().Single();
+            var settingsPage=contentArea.Controls.Cast<Control>().Single(c=>c!=statusStrip&&c.Visible);
+            Check(settingsPage.Bottom<=statusStrip.Top,"status strip sits below the page instead of covering its footer");
+            workspaceType.GetMethod("SelectConversation")!.Invoke(workspace,new object[]{"peer-a"});Application.DoEvents();
+            workspaceType.GetMethod("ShowSettings",BindingFlags.Instance|BindingFlags.NonPublic)!.Invoke(workspace,null);
+            Check(workspace.Controls.Find("WorkspaceTheme",true).Single().Visible,"settings page is available immediately");
+            workspaceType.GetMethod("ShowUpdates",BindingFlags.Instance|BindingFlags.NonPublic)!.Invoke(workspace,null);
+            Check(workspace.Controls.Find("WorkspaceUpdateSummary",true).Single().Visible,"update page is available immediately");
+            if(capture) SaveWorkspace(workspace,"workspace-updates");
+            workspaceType.GetMethod("SelectConversation")!.Invoke(workspace,new object[]{"peer-a"});
+            Check(workspace.Controls.Find("WorkspacePeer-peer-a",true).Single().GetType().Name=="WorkspaceDeviceRow" && workspace.Controls.Find("WorkspacePeer-peer-b",true).Single().GetType().Name=="WorkspaceDeviceRow","device sessions use purpose-built selectable rows");
             view.GetType().GetMethod("AddAttachments")!.Invoke(view,new object[]{new[]{directory}});
             Check(((string[])view.GetType().GetProperty("PendingAttachments")!.GetValue(view)!).Single()==directory,"directory queues without flattening");
             _pendingSend=new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);_failFiles=false;
             ((Button)workspace.Controls.Find("ConversationSendButton",true).Single()).PerformClick();Application.DoEvents();
             Check((bool)view.GetType().GetProperty("HasActiveSends")!.GetValue(view)!,"background transfer started");
-            workspaceType.GetMethod("SelectConversation")!.Invoke(workspace,new object[]{"peer-b"});Application.DoEvents();editor.Text="设备 B 的草稿";
+            workspaceType.GetMethod("SelectConversation")!.Invoke(workspace,new object[]{"peer-b"});
+            Check(((Control)view).Visible,"switching conversations displays the chat page");
+            Application.DoEvents();editor.Text="设备 B 的草稿";
             Check(!editor.ReadOnly,"other device remains editable during transfer");
             _pendingSend.SetResult();_pendingSend=null;var watch=System.Diagnostics.Stopwatch.StartNew();while((bool)view.GetType().GetProperty("HasActiveSends")!.GetValue(view)!&&watch.ElapsedMilliseconds<3000){Application.DoEvents();Thread.Sleep(10);}
             Check(editor.Text=="设备 B 的草稿","A completion preserves B draft");
             workspaceType.GetMethod("SelectConversation")!.Invoke(workspace,new object[]{"peer-a"});Application.DoEvents();
             Check(((string[])view.GetType().GetProperty("PendingAttachments")!.GetValue(view)!).Length==0,"A success clears only A attachments");
             ((Button)workspace.Controls.Find("WorkspaceSettings",true).Single()).PerformClick();Application.DoEvents();Check(workspace.Controls.Find("WorkspaceTheme",true).Single().Visible,"settings opens within same window");
+            if(capture) SaveWorkspace(workspace,"workspace-settings");
             workspaceType.GetMethod("SelectConversation")!.Invoke(workspace,new object[]{"peer-b"});Application.DoEvents();Check(editor.Text=="设备 B 的草稿","settings navigation preserves conversation draft");
             workspaceType.GetMethod("SelectConversation")!.Invoke(workspace,new object[]{"peer-a"});Application.DoEvents();
-            if(capture){using var image=new System.Drawing.Bitmap(workspace.Width,workspace.Height);workspace.DrawToBitmap(image,new System.Drawing.Rectangle(System.Drawing.Point.Empty,image.Size));string output=System.IO.Path.Combine(System.IO.Path.GetTempPath(),"clipbridge-ui-smoke","workspace-chat.png");image.Save(output,System.Drawing.Imaging.ImageFormat.Png);Console.WriteLine("SCREENSHOT "+output);}
+            if(capture) { editor.Focus(); Application.DoEvents(); SaveWorkspace(workspace,"workspace-chat"); }
+            foreach(string color in new[]{"Dark","Light"})
+            {
+                app.GetType("ClipBridge.Windows.Ui")!.GetMethod("ApplyTheme",BindingFlags.Static|BindingFlags.NonPublic)!.Invoke(null,new[]{Enum.Parse(app.GetType("ClipBridge.Windows.UiColorTheme")!,color)});
+                workspaceType.GetMethod("ApplyTheme")!.Invoke(workspace,new[]{Enum.Parse(themeMode,color)});
+                workspaceType.GetMethod("ShowUpdates",BindingFlags.Instance|BindingFlags.NonPublic)!.Invoke(workspace,null);
+                workspace.Size=workspace.MinimumSize;Application.DoEvents();
+                var summary=workspace.Controls.Find("WorkspaceUpdateSummary",true).Single();
+                Check(summary.Right<=summary.Parent!.ClientSize.Width,"update summary fits the minimum window width in "+color);
+                if(capture) SaveWorkspace(workspace,"workspace-updates-"+color.ToLowerInvariant()+"-compact");
+                workspaceType.GetMethod("SelectConversation")!.Invoke(workspace,new object[]{"peer-a"});
+                if(capture) SaveWorkspace(workspace,"workspace-chat-"+color.ToLowerInvariant()+"-compact");
+            }
             workspace.Size=workspace.MinimumSize;Application.DoEvents();Check(editor.Width>150,"workspace composer fits minimum width");
             workspaceType.GetMethod("AllowExit")!.Invoke(workspace,null);workspace.Close();
         }

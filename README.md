@@ -1,22 +1,19 @@
 # 互传 ClipBridge
 
-当前 Windows 版本：**0.5.8**
+当前 Windows 与 Android 版本：**0.5.9**
 
-[下载安装器](https://github.com/ailuo04/clipbridge/releases/download/v0.5.8/ClipBridge-0.5.8-win-x64-Setup.exe) · [发行版与更新说明](https://github.com/ailuo04/clipbridge/releases/tag/v0.5.8)
+[Windows 下载安装器](https://github.com/ailuo04/clipbridge/releases/download/v0.5.9/ClipBridge-0.5.9-win-x64-Setup.exe) · [Android APK](https://github.com/ailuo04/clipbridge/releases/download/v0.5.9/ClipBridge-0.5.9-android.apk) · [发行版与更新说明](https://github.com/ailuo04/clipbridge/releases/tag/v0.5.9)
 
 ## 更新内容
 
-双端会话与原文件互传
-- Windows 改为统一主窗口：左侧设备会话，右侧聊天；添加设备、设置、更新集中导航。
-- Android 增加设备会话列表，适配独立草稿、设备切换、删除设备及手机输入布局。
-- 手动编辑、粘贴后发送文字和图片；统一文件入口，支持选择文件或文件夹，Windows 支持拖入。
-- 图片和视频按原文件传输，不重新编码；文件夹保留子目录和空目录。接收端继续校验文件大小和 SHA-256。
-- 点击消息卡片打开图片、视频、文件或文件夹；已配对设备自动接收。
-- 多设备草稿与发送状态分开保存，切换会话不影响正在进行的文件传输。
-- 保留签名自动更新、HTTPS 下载及 Android 固定发布证书校验。
+Windows 更新体验与历史版本回退
+- 统一单窗口中的更新状态、接收文件夹和设置入口；改进输入框、文件按钮、设备导航及圆角菜单层次。
+- 侧栏显示最新版、检查中、失败重试或发现新版本，可从设置页备用检查更新。
+- 设置页支持查看 GitHub Releases 历史版本，并在用户确认后回退到经过签名验证的版本。
+- 回退继续校验 RSA 签名、HTTPS 地址、包大小、SHA-256 和 ZIP 内容；普通自动更新仍只允许升级，失败时保留原版本恢复机制。
+- 保留现有多设备会话、文件与文件夹互传及 Android 固定证书更新校验。
 
-使用说明：文件夹互传需要两端均升级至 0.5.8；单次最多 256 个文件和目录条目。Android 文件夹保存在应用接收目录，可从会话打开，卸载应用会清除此目录。普通接收文件仍在 Download/ClipBridge。
-验证范围：已通过 Windows/Android 构建、单元测试和 Kotlin/C# 双向目录协议互通；真实手机 UI、生产网络速度、安装升级流程未实测。Windows 安装器未进行 Authenticode 签名。
+Windows 安装器未进行 Authenticode 代码签名；实际安装、生产网络与手机设备行为需在目标环境验证。
 
 ## 安装与自动更新
 
@@ -25,8 +22,8 @@
 - 0.3.10 及以后安装器需要管理员权限创建安装目录；安装目录会授予当前用户 Modify 权限，后续更新无需重复 UAC。
 - 缺少 .NET 10 桌面运行时时，安装器从 Microsoft 官方下载、校验并请求管理员授权安装。
 - 安装器未进行 Authenticode 代码签名。
-- Android APK：[下载安装](https://github.com/ailuo04/clipbridge/releases/download/v0.5.8/ClipBridge-0.5.8-android.apk)；手动配对和发送步骤见 [安卓说明](android/README.md)。
+- Android APK 使用固定发布证书；调试包不能覆盖正式版。手动配对和发送步骤见 [安卓说明](android/README.md)。
 
 ## 开发与发布
 
-源码、GitHub Actions、更新清单和发行版都在 [https://github.com/ailuo04/clipbridge](https://github.com/ailuo04/clipbridge)。发布私钥只作为 GitHub Actions Secret 使用，不进入仓库、构建产物或日志。电脑重置后重新克隆该仓库即可继续开发；私钥还必须在仓库外保留加密备份。
+源码、GitHub Actions、更新清单和发行版都在 [GitHub](https://github.com/ailuo04/clipbridge)。发布私钥只作为 GitHub Actions Secret 使用，不进入仓库、构建产物或日志；私钥还必须在仓库外保留加密备份。

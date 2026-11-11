@@ -27,6 +27,7 @@ internal sealed class ConversationView : UserControl
     private readonly Func<PeerSnapshot, string[], CancellationToken, Task> _sendFiles;
     private readonly ModernButton _paste = new("粘贴", ButtonTone.Secondary, "\uE8C8") { Name = "ConversationPasteButton" };
     private readonly FlowLayoutPanel _attachmentStrip = new() { Name = "PendingAttachments", Dock = DockStyle.Fill, AutoScroll = true, WrapContents = false, Margin = Padding.Empty };
+    private readonly FlowLayoutPanel _composerTools = new() { Dock = DockStyle.Fill, WrapContents = false, BackColor = Ui.Surface, Margin = Padding.Empty };
     private List<string> _attachments = new();
     private readonly HashSet<string> _ownedImages = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, (string Text, List<string> Files)> _drafts = new();
@@ -92,11 +93,20 @@ internal sealed class ConversationView : UserControl
         Margin = Padding.Empty,
         PlaceholderText = "输入文字，Ctrl+V 粘贴；拖入文件可发送"
     };
+    private readonly InsetField _composerField = new(false)
+    {
+        Name = "ConversationEditorField",
+        Dock = DockStyle.Fill,
+        Padding = new Padding(10, 11, 10, 3),
+        Margin = new Padding(0, 2, 0, 2)
+    };
     private readonly ModernButton _send = new("", ButtonTone.Primary)
     {
         Name = "ConversationSendButton",
         Text = "发送",
-        AutoSize = true,
+        Glyph = "\uE724",
+        AutoSize = false,
+        Size = new Size(96, 38),
         FlatStyle = FlatStyle.Flat,
         Margin = new Padding(4, 0, 0, 0)
     };
@@ -104,7 +114,9 @@ internal sealed class ConversationView : UserControl
     {
         Name = "ConversationAttachButton",
         Text = "文件",
-        AutoSize = true,
+        Glyph = "\uE8A5",
+        AutoSize = false,
+        Size = new Size(82, 36),
         FlatStyle = FlatStyle.Flat,
         Margin = new Padding(4, 0, 0, 0)
     };
@@ -136,7 +148,7 @@ internal sealed class ConversationView : UserControl
     public bool HasActiveSends => _sending.Count > 0;
     public event Action? StateChanged;
     private readonly Label _peerTitle = new() { Dock = DockStyle.Fill, Font = Ui.Font(12f, FontStyle.Bold), TextAlign = ContentAlignment.MiddleLeft };
-    public void SetEmbedded() { _peers.Parent!.Controls.Remove(_peers); ((TableLayoutPanel)_status.Parent!).Controls.Add(_peerTitle, 0, 0); _manage.Text = "⋯"; _openDirectory.Visible = false; }
+    public void SetEmbedded() { _peers.Parent!.Controls.Remove(_peers); ((TableLayoutPanel)_status.Parent!).Controls.Add(_peerTitle, 0, 0); _manage.Text = ""; _manage.Glyph = "\uE712"; _manage.AutoSize = false; _manage.MinimumSize = new Size(36, 36); _manage.Size = new Size(36, 36); _manage.Tone = ButtonTone.Ghost; _manage.AccessibleName = "设备选项"; _manage.AccessibleDescription = "管理当前设备"; _openDirectory.Visible = false; }
     public void ForgetPeer(string id) { if (_sendCancellation.TryGetValue(id, out var cancel)) cancel.Cancel(); _drafts.Remove(id); if (_draftPeer == id) { _draftPeer = null; _attachments = new(); _composer.Clear(); _selected = null; RenderAttachments(); } }
     private bool _resourcesDisposed;
     private TransferProgress[] _transfers = Array.Empty<TransferProgress>();
@@ -177,23 +189,21 @@ internal sealed class ConversationView : UserControl
         {
             Name = "ConversationRoot",
             Dock = DockStyle.Fill,
-            Padding = new Padding(18),
+            Padding = new Padding(22, 18, 22, 16),
             Margin = Padding.Empty,
             ColumnCount = 1,
-            RowCount = 4,
+            RowCount = 3,
             BackColor = Ui.Canvas
         };
-        _root.RowStyles.Add(new RowStyle(SizeType.Absolute, 96));
+        _root.RowStyles.Add(new RowStyle(SizeType.Absolute, 82));
         _root.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
-        _root.RowStyles.Add(new RowStyle(SizeType.Absolute, 180));
-        _root.RowStyles.Add(new RowStyle(SizeType.Absolute, 28));
+        _root.RowStyles.Add(new RowStyle(SizeType.Absolute, 166));
         Controls.Add(_root);
 
         _root.Controls.Add(BuildHeader(), 0, 0);
         _root.Controls.Add(_timeline, 0, 1);
         _composerShell = BuildComposer();
         _root.Controls.Add(_composerShell, 0, 2);
-        _root.Controls.Add(BuildFooter(), 0, 3);
 
         _peers.SelectedIndexChanged += (_, _) => SelectPeerFromControl();
         _send.Click += async (_, _) => await SendTextAsync();
@@ -265,8 +275,10 @@ internal sealed class ConversationView : UserControl
         _subtitle.ForeColor = Ui.Muted;
         _peers.BackColor = Ui.FieldSurface;
         _peers.ForeColor = Ui.Ink;
-        _composer.BackColor = Ui.Surface;
+        _composer.BackColor = Ui.FieldSurface;
         _composer.ForeColor = Ui.Ink;
+        _composerField.BackColor = Ui.Surface;
+        _composerTools.BackColor = Ui.Surface;
         _dropZone.BackColor = Ui.Surface;
         _dropHint.ForeColor = Ui.Muted;
         foreach (Button button in new[] { _openDirectory, _manage, _send, _attach, _paste }) StyleButton(button);
@@ -301,20 +313,19 @@ internal sealed class ConversationView : UserControl
     private TableLayoutPanel BuildComposer()
     {
         var shell = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 1, Margin = new Padding(0, 8, 0, 0) };
-        var surface = new RoundedSurface { Name = "ConversationInputSurface", Dock = DockStyle.Fill, CornerRadius = 20, Padding = new Padding(16), FillColor = Ui.Surface, BorderColor = Ui.Line };
+        var surface = new RoundedSurface { Name = "ConversationInputSurface", Dock = DockStyle.Fill, CornerRadius = 14, Padding = new Padding(16), FillColor = Ui.Surface, BorderColor = Ui.Line };
         var layout = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 4, BackColor = Color.Transparent };
         layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 38)); layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 0)); layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100)); layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 38));
-        var tools = new FlowLayoutPanel { Dock = DockStyle.Fill, WrapContents = false, BackColor = Color.Transparent, Margin = Padding.Empty };
-        tools.Controls.Add(_attach);
-        layout.Controls.Add(tools, 0, 0); layout.Controls.Add(_attachmentStrip, 0, 1); layout.Controls.Add(_composer, 0, 2);
+        _composerTools.Controls.Add(_attach);
+        layout.Controls.Add(_composerTools, 0, 0); layout.Controls.Add(_attachmentStrip, 0, 1);
+        _composerField.Controls.Add(_composer);
+        layout.Controls.Add(_composerField, 0, 2);
         _composer.MinimumSize = Size.Empty; _composer.PlaceholderText = "输入或粘贴文字、图片，也可以拖入视频和文件";
         var bottom = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, BackColor = Color.Transparent, Margin = Padding.Empty };
         bottom.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100)); bottom.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
-        bottom.Controls.Add(new Label { Text = "Enter 发送 · Shift + Enter 换行 · 原文件", Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft, ForeColor = Ui.Muted, Font = Ui.Font(8f) }, 0, 0);
         bottom.Controls.Add(_send, 1, 0); layout.Controls.Add(bottom, 0, 3);
         surface.Controls.Add(layout); shell.Controls.Add(surface); return shell;
     }
-    private Control BuildFooter() => new Label { Name = "ConversationFooter", Text = "已配对设备直接接收 · 记录保留 7 天 · 右键消息可复制或管理", Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleCenter, ForeColor = Ui.Muted, Font = Ui.Font(8f) };
 
     private void SelectPeerFromControl()
     {
@@ -456,7 +467,7 @@ internal sealed class ConversationView : UserControl
             tile.Controls.Add(remove); _attachmentStrip.Controls.Add(tile);
         }
         if (_attachmentStrip.Parent is TableLayoutPanel layout) layout.RowStyles[1].Height = _attachments.Count > 0 ? 80 : 0;
-        _root.RowStyles[2].Height = _attachments.Count > 0 ? 260 : 180;
+        _root.RowStyles[2].Height = _attachments.Count > 0 ? 246 : 166;
     }
 
     private void ComposerKeyDown(object? sender, KeyEventArgs e)
@@ -470,7 +481,7 @@ internal sealed class ConversationView : UserControl
 
     private void ShowAttachmentMenu()
     {
-        var menu = new ContextMenuStrip();
+        var menu = new RoundedContextMenuStrip();
         menu.Items.Add("选择文件（图片、视频及其他文件）", null, (_, _) => ChooseFiles());
         menu.Items.Add("选择文件夹", null, (_, _) => { using var dialog = new FolderBrowserDialog { Description = "选择要发送的文件夹", UseDescriptionForTitle = true }; if (dialog.ShowDialog(this) == DialogResult.OK) AddAttachments(new[] { dialog.SelectedPath }); });
         menu.Closed += (_, _) => menu.Dispose(); menu.Show(_attach, new Point(0, _attach.Height));

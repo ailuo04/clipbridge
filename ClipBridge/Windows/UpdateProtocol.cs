@@ -44,20 +44,45 @@ internal static class UpdateProtocol
 
 	internal static AvailableUpdate? ParseAndVerify(string envelopeJson)
 	{
+		return ParseAndVerifyCore(envelopeJson, CurrentVersion, requireNewer: true, expectedVersion: null);
+	}
+
+	internal static AvailableUpdate ParseAndVerifyRollback(string envelopeJson, string expectedVersion, Version currentVersion)
+	{
+		if (string.IsNullOrWhiteSpace(expectedVersion) || !Version.TryParse(expectedVersion, out Version? requestedVersion))
+		{
+			throw new UpdateProtocolException("回退版本号格式无效");
+		}
+		return ParseAndVerifyCore(envelopeJson, currentVersion, requireNewer: false, requestedVersion.ToString(3))
+			?? throw new UpdateProtocolException("更新清单缺少 Windows 安装包");
+	}
+
+	internal static bool IsTrustedHistoricalPackageUrl(string value, string expectedVersion)
+	{
+		if (!Version.TryParse(expectedVersion, out Version? version))
+		{
+			return false;
+		}
+		string expectedUrl = $"https://raw.githubusercontent.com/ailuo04/clipbridge/master/ClipBridge-{version.ToString(3)}-win-x64.zip";
+		return string.Equals(value, expectedUrl, StringComparison.Ordinal);
+	}
+
+	private static AvailableUpdate? ParseAndVerifyCore(string envelopeJson, Version currentVersion, bool requireNewer, string? expectedVersion)
+	{
 		try
 		{
-			using JsonDocument jsonDocument = JsonDocument.Parse(envelopeJson, new JsonDocumentOptions
+			using JsonDocument envelope = JsonDocument.Parse(envelopeJson, new JsonDocumentOptions
 			{
 				MaxDepth = 16
 			});
-			JsonElement rootElement = jsonDocument.RootElement;
-			string s = RequiredString(rootElement, "payload");
-			string s2 = RequiredString(rootElement, "signature");
-			byte[] array = Convert.FromBase64String(s);
-			byte[] signature = Convert.FromBase64String(s2);
-			using RSA rSA = RSA.Create();
-			rSA.ImportSubjectPublicKeyInfo(Convert.FromBase64String(PublicKeyBase64), out _);
-			bool validSignature = rSA.VerifyData(array, signature, HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1);
+			JsonElement envelopeRoot = envelope.RootElement;
+			string payloadText = RequiredString(envelopeRoot, "payload");
+			string signatureText = RequiredString(envelopeRoot, "signature");
+			byte[] payload = Convert.FromBase64String(payloadText);
+			byte[] signature = Convert.FromBase64String(signatureText);
+			using RSA rsa = RSA.Create();
+			rsa.ImportSubjectPublicKeyInfo(Convert.FromBase64String(PublicKeyBase64), out _);
+			bool validSignature = rsa.VerifyData(payload, signature, HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1);
 			if (!validSignature)
 			{
 				using Stream publicKeyStream = Assembly.GetExecutingAssembly().GetManifestResourceStream("ClipBridge.release-signing-public-key.txt")
@@ -65,63 +90,83 @@ internal static class UpdateProtocol
 				using StreamReader publicKeyReader = new StreamReader(publicKeyStream);
 				using RSA rotatedKey = RSA.Create();
 				rotatedKey.ImportSubjectPublicKeyInfo(Convert.FromBase64String(publicKeyReader.ReadToEnd().Trim()), out _);
-				validSignature = rotatedKey.VerifyData(array, signature, HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1);
+				validSignature = rotatedKey.VerifyData(payload, signature, HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1);
 			}
 			if (!validSignature)
 			{
 				throw new UpdateProtocolException("更新清单签名无效");
 			}
-			using JsonDocument jsonDocument2 = JsonDocument.Parse((ReadOnlyMemory<byte>)array, new JsonDocumentOptions
+
+			using JsonDocument manifest = JsonDocument.Parse((ReadOnlyMemory<byte>)payload, new JsonDocumentOptions
 			{
 				MaxDepth = 16
 			});
-			JsonElement rootElement2 = jsonDocument2.RootElement;
-			if (rootElement2.GetProperty("schema").GetInt32() != 1)
+			JsonElement root = manifest.RootElement;
+			if (root.GetProperty("schema").GetInt32() != 1)
 			{
 				throw new UpdateProtocolException("不支持的更新清单格式");
 			}
-			if (!rootElement2.TryGetProperty("windows", out var value) || value.ValueKind == JsonValueKind.Null)
+			if (!root.TryGetProperty("windows", out JsonElement windows) || windows.ValueKind == JsonValueKind.Null)
 			{
 				return null;
 			}
-			string text = RequiredString(value, "version");
-			if (!Version.TryParse(text, out Version? result))
+
+			string versionText = RequiredString(windows, "version");
+			if (!Version.TryParse(versionText, out Version? version))
 			{
 				throw new UpdateProtocolException("更新版本号格式无效");
 			}
-			if (result <= CurrentVersion)
+			if (requireNewer)
 			{
-				return null;
+				if (version <= currentVersion)
+				{
+					return null;
+				}
 			}
-			string text2 = RequiredString(value, "url");
-			EnsureTrustedUrl(text2, "安装包地址");
-			byte[] array2 = Convert.FromHexString(RequiredString(value, "sha256"));
-			if (array2.Length != 32)
+			else
+			{
+				if (version >= currentVersion)
+				{
+					throw new UpdateProtocolException("回退目标必须低于当前版本");
+				}
+				if (!string.Equals(version.ToString(3), expectedVersion, StringComparison.Ordinal))
+				{
+					throw new UpdateProtocolException("回退版本与发布标签不一致");
+				}
+			}
+
+			string downloadUrl = RequiredString(windows, "url");
+			EnsureTrustedUrl(downloadUrl, "安装包地址");
+			if (!requireNewer && !IsTrustedHistoricalPackageUrl(downloadUrl, expectedVersion!))
+			{
+				throw new UpdateProtocolException("历史安装包地址不受信任");
+			}
+			byte[] hash = Convert.FromHexString(RequiredString(windows, "sha256"));
+			if (hash.Length != 32)
 			{
 				throw new UpdateProtocolException("安装包 SHA-256 格式无效");
 			}
-			long @int = value.GetProperty("size").GetInt64();
-			if (@int <= 0 || @int > 209715200)
+			long size = windows.GetProperty("size").GetInt64();
+			if (size <= 0 || size > MaxPackageBytes)
 			{
 				throw new UpdateProtocolException("安装包大小超出允许范围");
 			}
-			string text3 = (value.TryGetProperty("notes", out var value2) ? (value2.GetString() ?? "") : "");
-			if (text3.Length > 4000)
+			string notes = windows.TryGetProperty("notes", out JsonElement notesElement) ? notesElement.GetString() ?? "" : "";
+			if (notes.Length > 4000)
 			{
-				text3 = text3.Substring(0, 4000);
+				notes = notes.Substring(0, 4000);
 			}
-			return new AvailableUpdate(text, text2, @int, Convert.ToHexString(array2), text3);
+			return new AvailableUpdate(version.ToString(3), downloadUrl, size, Convert.ToHexString(hash), notes, !requireNewer);
 		}
 		catch (UpdateProtocolException)
 		{
 			throw;
 		}
-		catch (Exception ex2) when ((ex2 is JsonException || ex2 is FormatException || ex2 is InvalidOperationException || ex2 is CryptographicException || ex2 is KeyNotFoundException) ? true : false)
+		catch (Exception error) when (error is JsonException || error is FormatException || error is InvalidOperationException || error is CryptographicException || error is KeyNotFoundException)
 		{
-			throw new UpdateProtocolException("更新清单格式或签名无效", ex2);
+			throw new UpdateProtocolException("更新清单格式或签名无效", error);
 		}
 	}
-
 	internal static async Task DownloadAsync(AvailableUpdate update, string destinationPath, CancellationToken cancellationToken, IProgress<UpdateProgress>? progress = null)
 	{
 		EnsureTrustedUrl(update.DownloadUrl, "安装包地址");
