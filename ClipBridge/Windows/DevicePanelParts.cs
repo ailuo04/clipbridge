@@ -13,16 +13,24 @@ internal sealed class IconTile : Control
 	[System.ComponentModel.DesignerSerializationVisibility(System.ComponentModel.DesignerSerializationVisibility.Hidden)]
 	public string Glyph { get; set; } = "";
 
+	[System.ComponentModel.DesignerSerializationVisibility(System.ComponentModel.DesignerSerializationVisibility.Hidden)]
+	public Color SurfaceColor
+	{
+		get => BackColor;
+		set { BackColor = value; Invalidate(); }
+	}
+
 	public IconTile()
 	{
-		SetStyle(ControlStyles.UserPaint | ControlStyles.ResizeRedraw | ControlStyles.SupportsTransparentBackColor | ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer, value: true);
-		BackColor = Color.Transparent;
+		SetStyle(ControlStyles.UserPaint | ControlStyles.ResizeRedraw | ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer, value: true);
+		BackColor = Ui.Surface;
 		TabStop = false;
 		Size = new Size(40, 40);
 	}
 
 	protected override void OnPaint(PaintEventArgs e)
 	{
+		e.Graphics.Clear(BackColor);
 		e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
 		RectangleF bounds = new RectangleF(0.5f, 0.5f, Width - 1f, Height - 1f);
 		using (SolidBrush fill = new SolidBrush(Ui.AccentSoft))

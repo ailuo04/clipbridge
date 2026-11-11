@@ -5,6 +5,7 @@ using System.Linq;
 using System.Net;
 using System.Reflection;
 using System.Security.Cryptography;
+using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
 using ClipBridge.Windows;
@@ -25,6 +26,33 @@ internal static class UpdateExperienceSmoke
     private static object Get(object value, string property) => value.GetType().GetProperty(property)!.GetValue(value)!;
     private static string Stage(object value) => Get(value, "Stage").ToString()!;
 
+    private static void ExpectProtocolError(Action operation, string description)
+    {
+        try { operation(); }
+        catch (UpdateProtocolException) { Check(true, description); return; }
+        Check(false, description);
+    }
+
+    public static void VerifyManifest()
+    {
+        string envelope = File.ReadAllText(Path.Combine(Environment.CurrentDirectory, "manifest-0.5.0.json"));
+        AvailableUpdate update = UpdateProtocol.ParseAndVerifyRollback(envelope, "0.5.0", new Version(0, 5, 6));
+        Check(update.Version == "0.5.0" && update.IsRollback, "signed historical manifest returns an explicit rollback target");
+        Check(update.DownloadUrl == "https://raw.githubusercontent.com/ailuo04/clipbridge/master/ClipBridge-0.5.0-win-x64.zip", "historical target uses the exact signed GitHub ZIP URL");
+        Check(update.Size == 531856 && update.Sha256 == "300794E91407C99BBD512EF2A33715BCA75825900A5B9D9FA990BF6C0591DC14".Replace(" ", ""), "historical target preserves signed size and SHA-256");
+        Check(UpdateProtocol.ParseAndVerify(envelope) == null, "automatic update parsing still rejects an older signed manifest");
+        ExpectProtocolError(() => UpdateProtocol.ParseAndVerifyRollback(envelope, "0.5.1", new Version(0, 5, 6)), "release tag mismatch is rejected");
+        ExpectProtocolError(() => UpdateProtocol.ParseAndVerifyRollback(envelope, "0.5.0", new Version(0, 5, 0)), "current version is not accepted as rollback target");
+        ExpectProtocolError(() => UpdateProtocol.ParseAndVerifyRollback(envelope, "0.5.0", new Version(0, 4, 9)), "newer target is not accepted as rollback");
+        using JsonDocument json = JsonDocument.Parse(envelope);
+        string signature = json.RootElement.GetProperty("signature").GetString()!;
+        string tamperedSignature = (signature[0] == 'A' ? "B" : "A") + signature[1..];
+        ExpectProtocolError(() => UpdateProtocol.ParseAndVerifyRollback(envelope.Replace(signature, tamperedSignature, StringComparison.Ordinal), "0.5.0", new Version(0, 5, 6)), "tampered signature is rejected");
+        Check(UpdateProtocol.IsTrustedHistoricalPackageUrl("https://raw.githubusercontent.com/ailuo04/clipbridge/master/ClipBridge-0.5.0-win-x64.zip", "0.5.0"), "only the exact official historical ZIP path is trusted");
+        Check(!UpdateProtocol.IsTrustedHistoricalPackageUrl("https://example.com/ClipBridge-0.5.0-win-x64.zip", "0.5.0"), "foreign package host is rejected");
+        Check(!UpdateProtocol.IsTrustedHistoricalPackageUrl("https://raw.githubusercontent.com/attacker/clipbridge/master/ClipBridge-0.5.0-win-x64.zip", "0.5.0"), "foreign repository is rejected");
+        Check(!UpdateProtocol.IsTrustedHistoricalPackageUrl("https://raw.githubusercontent.com/ailuo04/clipbridge/master/ClipBridge-0.5.1-win-x64.zip", "0.5.0"), "different package version is rejected");
+    }
     public static async Task RunAsync()
     {
         MethodInfo? download = typeof(UpdateProtocol).GetMethods(BindingFlags.NonPublic | BindingFlags.Static)
@@ -115,7 +143,7 @@ internal static class UpdateExperienceSmoke
         File.WriteAllText(Path.Combine(staged, "new-file.txt"), "must be removed on rollback");
         string marker = Path.Combine(root, "restarted.txt"), progress = Path.Combine(root, "progress.txt");
         var start = new System.Diagnostics.ProcessStartInfo(Path.Combine(install, "ClipBridge.exe")) { UseShellExecute = false, CreateNoWindow = true, WorkingDirectory = install };
-        start.ArgumentList.Add("--spawn-helper"); start.ArgumentList.Add(staged);
+        start.ArgumentList.Add("--spawn-helper"); start.ArgumentList.Add(staged); start.ArgumentList.Add("0.5.4");
         foreach (string secret in new[] { "GITHUB_TOKEN", "CLIPBRIDGE_UPDATE_PRIVATE_KEY", "CLIPBRIDGE_ANDROID_KEYSTORE_BASE64", "CLIPBRIDGE_ANDROID_KEYSTORE_PASSWORD", "CLIPBRIDGE_ANDROID_KEYSTORE_PATH" }) start.Environment.Remove(secret);
         start.Environment["CLIPBRIDGE_SMOKE_ROOT"] = data; start.Environment["CLIPBRIDGE_SMOKE_MARKER"] = marker; start.Environment["CLIPBRIDGE_SMOKE_PROGRESS"] = progress;
         using var client = System.Diagnostics.Process.Start(start)!; await client.WaitForExitAsync();

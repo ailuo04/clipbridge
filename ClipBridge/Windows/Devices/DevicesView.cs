@@ -96,19 +96,6 @@ internal sealed class DevicesView : UserControl
         ResumeLayout(true);
     }
 
-    protected override CreateParams CreateParams
-    {
-        get
-        {
-            CreateParams parameters = base.CreateParams;
-            // Paint the whole window as one composited surface: child windows
-            // cannot flash white at the frame during a 120 Hz resize.
-            parameters.ClassStyle |= 0x00020000;
-            parameters.ExStyle |= 0x02000000;
-            return parameters;
-        }
-    }
-
     private Font OwnedFont(float size, FontStyle style = FontStyle.Regular)
     {
         var font = Ui.Font(size, style);
@@ -533,6 +520,7 @@ internal sealed class DevicesView : UserControl
                 childBackground = Ui.Surface;
             }
             else if (control is TextBoxShell || control is TextBox) control.BackColor = childBackground = Ui.FieldSurface;
+            else if (control is IconTile icon) icon.SurfaceColor = childBackground;
             else if (control is not ModernButton && control is not IconTile && control is not CountPill)
                 control.BackColor = background;
             control.ForeColor = (control.Tag as string) switch

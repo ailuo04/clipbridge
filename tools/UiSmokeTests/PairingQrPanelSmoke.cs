@@ -7,6 +7,7 @@ using System.Linq;
 using System.Linq.Expressions;
 using System.Net;
 using System.Net.NetworkInformation;
+using System.Runtime.InteropServices;
 using System.Reflection;
 using System.Security.Cryptography;
 using System.Threading;
@@ -14,6 +15,14 @@ using System.Windows.Forms;
 
 internal static class PairingQrPanelSmoke
 {
+    [StructLayout(LayoutKind.Sequential)]
+    private struct NativeRect { public int Left, Top, Right, Bottom; }
+    [StructLayout(LayoutKind.Sequential)]
+    private struct ComboBoxInfo { public int Size; public NativeRect Item; public NativeRect Button; public uint ButtonState; public IntPtr Combo; public IntPtr ItemWindow; public IntPtr ListWindow; }
+    [DllImport("user32.dll", SetLastError = true)] private static extern bool GetComboBoxInfo(IntPtr combo, ref ComboBoxInfo info);
+    [DllImport("gdi32.dll", SetLastError = true)] private static extern IntPtr CreateRectRgn(int left, int top, int right, int bottom);
+    [DllImport("gdi32.dll")] private static extern bool DeleteObject(IntPtr handle);
+    [DllImport("user32.dll", SetLastError = true)] private static extern int GetWindowRgn(IntPtr window, IntPtr region);
     private static void Pump()
     {
         var watch = Stopwatch.StartNew();
@@ -59,13 +68,34 @@ internal static class PairingQrPanelSmoke
         void Refresh() { panelType.GetMethod("RefreshAddresses")!.Invoke(panel, null); Pump(); }
         var image = (PictureBox)panel.Controls.Find("PairingQrImage", true).Single();
         var selector = (ComboBox)panel.Controls.Find("PairingQrAddresses", true).Single();
+        Check(selector.DrawMode == DrawMode.OwnerDrawFixed && selector.FlatStyle == FlatStyle.Flat, "network address selector uses the app's flat themed field style");
+        MethodInfo drawAddress = panelType.GetMethod("DrawAddress", BindingFlags.Static | BindingFlags.NonPublic)!;
         Control status = panel.Controls.Find("PairingQrStatus", true).Single();
         Refresh();
         Check(image.Image == null && !selector.Enabled && status.Text.Contains("连接"), "opening offline gives an explicit recovery message and no stale QR");
         options = Addresses(Address("VPN", "10.1.0.9", false), Address("WLAN", "10.51.2.197", true), Address("Public", "8.8.8.8", true), Address("Loopback", "127.0.0.1", true));
         Refresh();
         Check(selector.Items.Count == 2 && selector.SelectedItem!.ToString()!.StartsWith("10.51.2.197"), "only local addresses appear and the network with a gateway is selected");
+        Color selectedFill = (Color)uiType.GetField("AccentSoftSolid", BindingFlags.Static | BindingFlags.NonPublic)!.GetValue(null)!;
+        using (var rendered = new Bitmap(200, selector.ItemHeight))
+        using (Graphics graphics = Graphics.FromImage(rendered))
+        {
+            var args = new DrawItemEventArgs(graphics, selector.Font, new Rectangle(0, 0, rendered.Width, rendered.Height), selector.SelectedIndex, DrawItemState.Selected);
+            drawAddress.Invoke(null, new object[] { selector, args });
+            Check(rendered.GetPixel(rendered.Width - 2, rendered.Height / 2).ToArgb() == selectedFill.ToArgb(), "selected network address uses the application accent instead of system blue");
+        }
         Check(image.Image != null && !panel.Controls.Find("PairingQrUnavailable", true).Single().Visible, "a usable network automatically renders a QR");
+        selector.DroppedDown = true; Pump();
+        var comboInfo = new ComboBoxInfo { Size = Marshal.SizeOf<ComboBoxInfo>() };
+        bool hasRoundedPopup = false;
+        if (GetComboBoxInfo(selector.Handle, ref comboInfo) && comboInfo.ListWindow != IntPtr.Zero)
+        {
+            IntPtr probe = CreateRectRgn(0, 0, 1, 1);
+            try { hasRoundedPopup = GetWindowRgn(comboInfo.ListWindow, probe) != 0; }
+            finally { DeleteObject(probe); }
+        }
+        selector.DroppedDown = false; Pump();
+        Check(hasRoundedPopup, "network address dropdown clips to a rounded app-style popup");
         Image original = image.Image!;
         string originalHash = Hash(original);
         Refresh();

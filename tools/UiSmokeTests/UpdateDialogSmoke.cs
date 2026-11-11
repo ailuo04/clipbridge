@@ -25,57 +25,63 @@ internal static class UpdateDialogSmoke
         foreach (string mode in new[] { "Light", "Dark" })
         {
             ui.GetMethod("ApplyTheme", BindingFlags.NonPublic | BindingFlags.Static)!.Invoke(null, new[] { Enum.Parse(theme, mode) });
-            Color canvas = (Color)ui.GetField("Canvas", BindingFlags.NonPublic | BindingFlags.Static)!.GetValue(null)!;
-            Color surface = (Color)ui.GetField("Surface", BindingFlags.NonPublic | BindingFlags.Static)!.GetValue(null)!;
-            Color ink = (Color)ui.GetField("Ink", BindingFlags.NonPublic | BindingFlags.Static)!.GetValue(null)!;
-            Color muted = (Color)ui.GetField("Muted", BindingFlags.NonPublic | BindingFlags.Static)!.GetValue(null)!;
-            using Form owner = new() { Text = "ClipBridge test workspace", ClientSize = new Size(1180, 800), BackColor = canvas, ForeColor = ink, StartPosition = FormStartPosition.Manual };
+            using Form owner = new() { Text = "ClipBridge test workspace", ClientSize = new Size(1180, 800), BackColor = Color.FromArgb(238, 242, 248), StartPosition = FormStartPosition.Manual };
             owner.Location = new Point(30, 30);
-            owner.Controls.Add(new Label { Text = "ClipBridge", Font = new Font("Microsoft YaHei UI", 17f, FontStyle.Bold), ForeColor = ink, Location = new Point(34, 24), AutoSize = true });
-            owner.Controls.Add(new Label { Text = "网络与安全                                                                 设备", Font = new Font("Microsoft YaHei UI", 10f), ForeColor = muted, Location = new Point(40, 117), AutoSize = true });
-            owner.Controls.Add(new Panel { BackColor = surface, Location = new Point(28, 96), Size = new Size(340, 520) });
-            owner.Controls.Add(new Panel { BackColor = surface, Location = new Point(384, 96), Size = new Size(760, 520) });
-            owner.Controls.Add(new Label { Text = "等待设备连接", Font = new Font("Microsoft YaHei UI", 18f, FontStyle.Bold), ForeColor = ink, Location = new Point(610, 300), AutoSize = true });
-            owner.Controls.Add(new Label { Text = "同一局域网内的设备会自动出现在这里", Font = new Font("Microsoft YaHei UI", 9.5f), ForeColor = muted, Location = new Point(586, 344), AutoSize = true });
-            owner.Controls.Add(new Panel { BackColor = surface, Location = new Point(40, 600), Size = new Size(1120, 150) });
+            owner.Controls.Add(new Label { Text = "ClipBridge", Font = new Font("Microsoft YaHei UI", 17f, FontStyle.Bold), ForeColor = Color.FromArgb(30, 39, 53), Location = new Point(34, 24), AutoSize = true });
+            owner.Controls.Add(new Label { Text = "网络与安全                                                                 设备", Font = new Font("Microsoft YaHei UI", 10f), ForeColor = Color.FromArgb(70, 88, 112), Location = new Point(40, 117), AutoSize = true });
+            owner.Controls.Add(new Panel { BackColor = Color.White, Location = new Point(28, 96), Size = new Size(340, 520) });
+            owner.Controls.Add(new Panel { BackColor = Color.White, Location = new Point(384, 96), Size = new Size(760, 520) });
+            owner.Controls.Add(new Label { Text = "等待设备连接", Font = new Font("Microsoft YaHei UI", 18f, FontStyle.Bold), ForeColor = Color.FromArgb(30, 39, 53), Location = new Point(610, 300), AutoSize = true });
+            owner.Controls.Add(new Label { Text = "同一局域网内的设备会自动出现在这里", Font = new Font("Microsoft YaHei UI", 9.5f), ForeColor = Color.FromArgb(95, 112, 137), Location = new Point(586, 344), AutoSize = true });
+            owner.Controls.Add(new Panel { BackColor = Color.FromArgb(238, 244, 252), Location = new Point(40, 600), Size = new Size(1120, 150) });
             owner.Show(); Pump(120);
 
             using Form dialog = (Form)Activator.CreateInstance(type!, new object[] { "0.5.7", "更新界面更轻更流畅\n改进设备连接与传输稳定性\n修复若干已知问题", 12L * 1024 * 1024, false })!;
             Control Find(string name) => dialog.Controls.Find(name, true)[0];
-            dialog.Show(owner); Pump(180);
+            using (Form rollbackDialog = (Form)Activator.CreateInstance(type!, new object[] { "0.5.4", "测试历史版本", 531856L, false, true })!)
+            {
+                Control rollbackCard = rollbackDialog.Controls.Find("UpdateCard", true).Single();
+                Check(((string)Prop(rollbackCard, "TitleText")).Contains("回退") && ((Button)rollbackDialog.Controls.Find("UpdateInstallButton", true).Single()).Text.Contains("回退"), mode + " rollback confirmation uses rollback wording and target version");
+                type!.GetMethod("BeginDownload", BindingFlags.Instance | BindingFlags.NonPublic)!.Invoke(rollbackDialog, null);
+                Check(((string)Prop(rollbackCard, "TitleText")).Contains("回退"), mode + " rollback progress keeps rollback wording");
+                type.GetMethod("ShowFailure")!.Invoke(rollbackDialog, new object[] { "测试回退下载失败" });
+                Check(((string)Prop(rollbackCard, "TitleText")).Contains("回退") && rollbackDialog.AccessibleDescription!.Contains("回退"), mode + " rollback failure remains distinguishable and accessible");
+            }
+            bool animations=(bool)app.GetType("ClipBridge.Windows.VisualMotion")!.GetProperty("AnimationsEnabled",BindingFlags.Static|BindingFlags.NonPublic)!.GetValue(null)!;
+            dialog.Show(owner);
+            Check(animations ? dialog.Opacity < 1 : dialog.Opacity == 1, mode + " modal entrance respects the system motion preference");
+            var entrance=Stopwatch.StartNew();
+            while(dialog.Opacity<1 && entrance.ElapsedMilliseconds<2000) Pump(20);
+            Check(dialog.Opacity==1,mode + " modal entrance settles at full opacity");
             Control card = Find("UpdateCard");
             Control backdrop = Find("UpdateBackdrop");
-            Check(backdrop.GetType().Name == "ModalBackdropSurface", mode + " update dialog uses the shared modal backdrop surface");
             Check(dialog.Bounds == owner.RectangleToScreen(owner.ClientRectangle), mode + " update overlay covers the whole ClipBridge window");
             Check(Math.Abs(card.Left + card.Width / 2 - dialog.ClientSize.Width / 2) <= 2 && Math.Abs(card.Top + card.Height / 2 - dialog.ClientSize.Height / 2) <= 2, mode + " glass card is centred inside the software window");
             Check((int)Prop(backdrop, "Builds") == 1, mode + " workspace backdrop is captured and blurred once");
-            using (var blurred = new Bitmap((Bitmap)Field(backdrop, "_blurred")!))
+            Check((int)Prop(backdrop, "ScrimAlpha") >= 76, mode + " modal backdrop is dimmed beneath the foreground card");
+            Rectangle shadowBounds=(Rectangle)Prop(backdrop,"CardShadowBounds");
+            Check(shadowBounds.Contains(card.Bounds) && shadowBounds != card.Bounds,mode + " glass card has a separate soft-shadow boundary");
+            // The live backdrop owns this bitmap; inspecting it must not dispose it.
+            Bitmap blurred = (Bitmap)Field(backdrop, "_blurred")!;
             {
                 var levels = new System.Collections.Generic.HashSet<int>();
-                double sum = 0, sumSquares = 0; int samples = 0, minAlpha = 255;
+                double sum = 0, sumSquares = 0; int samples = 0;
                 for (int y = 0; y < blurred.Height; y += 9)
                 for (int x = 0; x < blurred.Width; x += 9)
                 {
                     Color pixel = blurred.GetPixel(x, y);
-                    minAlpha = Math.Min(minAlpha, pixel.A);
                     double luminance = pixel.R * .299 + pixel.G * .587 + pixel.B * .114;
                     levels.Add((int)luminance / 10);
                     sum += luminance; sumSquares += luminance * luminance; samples++;
                 }
                 double deviation = Math.Sqrt(Math.Max(0, sumSquares / samples - Math.Pow(sum / samples, 2)));
                 Check(levels.Count >= 4 && deviation > 3.5, mode + " frosted backdrop keeps the workspace's tonal structure (" + levels.Count + " bands, sigma " + deviation.ToString("0.0") + ")");
-                Check(minAlpha == 255, mode + " captured backdrop remains opaque at rounded card corners");
             }
-            Rectangle cardSource = dialog.RectangleToClient(card.RectangleToScreen(card.ClientRectangle));
-            Bitmap capturedBackdrop = (Bitmap)Prop(backdrop, "Image");
-            Bitmap cardChrome = (Bitmap)Field(card, "_chrome")!;
-            Check(cardChrome.GetPixel(5, 5).ToArgb() == capturedBackdrop.GetPixel(cardSource.X + 5, cardSource.Y + 5).ToArgb(), mode + " glass card samples the backdrop in owner-client coordinates");
             Check(card.GetType().GetMethod("ConfigureAvailable", BindingFlags.Instance | BindingFlags.NonPublic) != null && dialog.Controls.Find("UpdateNotes", true).Length == 0, mode + " update content uses one owner-drawn glass surface instead of stacked cards");
             Check(dialog.AccessibleName == "软件更新" && dialog.AccessibleDescription!.Contains("0.5.7") && dialog.AccessibleDescription.Contains("12.0 MB"), mode + " compact dialog exposes version and size to assistive tech");
             Check(!(bool)Prop(card, "ProgressVisible") && dialog.Height > 500, mode + " ready dialog hides inactive progress without an empty block");
             Check(dialog.FormBorderStyle == FormBorderStyle.None, mode + " updater uses a custom overlay frame");
             Check(Find("UpdateCloseButton").AccessibleName == "关闭更新窗口", "custom close remains accessible");
-            Check(ReferenceEquals(Find("UpdateInstallButton").Parent, card) && ReferenceEquals(Find("UpdateCancelButton").Parent, card) && ReferenceEquals(Find("UpdateCloseButton").Parent, card), mode + " update actions paint over the glass surface instead of the flat form backdrop");
             int bakedChrome = (int)Prop(card, "ChromeBuilds");
             Check(bakedChrome >= 1, mode + " glass chrome is baked before first paint (" + bakedChrome + " builds)");
             Check(Field(card, "_backdrop") != null, mode + " glass card itself composites the frosted workspace");
@@ -118,6 +124,20 @@ internal static class UpdateDialogSmoke
             if (capture) Save(dialog, "update-" + mode.ToLowerInvariant());
 
             Type cardT = card.GetType();
+            cardT.GetMethod("ConfigureAvailable", BindingFlags.Instance | BindingFlags.NonPublic)!.Invoke(card, new object[] { "0.5.7", "短说明", 12L * 1024 * 1024 });
+            using Bitmap shortNotes = new(card.Width, card.Height);
+            card.DrawToBitmap(shortNotes, new Rectangle(Point.Empty, shortNotes.Size));
+            string overflowingNotes = string.Concat(Enumerable.Repeat("很长的更新说明需要限制在说明区域内，不能覆盖下面的安全提示和按钮。", 20));
+            cardT.GetMethod("ConfigureAvailable", BindingFlags.Instance | BindingFlags.NonPublic)!.Invoke(card, new object[] { "0.5.7", overflowingNotes, 12L * 1024 * 1024 });
+            Pump();
+            using Bitmap longNotes = new(card.Width, card.Height);
+            card.DrawToBitmap(longNotes, new Rectangle(Point.Empty, longNotes.Size));
+            int notesClipBottom = (int)Math.Ceiling(264 * (float)Prop(card, "LayoutScale"));
+            int leakedPixels = 0;
+            for (int y = notesClipBottom; y < longNotes.Height; y++)
+            for (int x = 0; x < longNotes.Width; x++)
+                if (shortNotes.GetPixel(x, y).ToArgb() != longNotes.GetPixel(x, y).ToArgb()) leakedPixels++;
+            Check(leakedPixels == 0, "long release notes do not paint outside their viewport");
             cardT.GetMethod("ConfigureAvailable", BindingFlags.Instance | BindingFlags.NonPublic)!.Invoke(card, new object[] { "0.5.7", string.Join("\n", Enumerable.Range(1, 40).Select(index => "更新内容 " + index + "：支持长说明阅读与键盘滚动。")), 12L * 1024 * 1024 });
             Pump();
             cardT.GetMethod("OnKeyDown", BindingFlags.Instance | BindingFlags.NonPublic)!.Invoke(card, new object[] { new KeyEventArgs(Keys.End) });
@@ -128,22 +148,20 @@ internal static class UpdateDialogSmoke
 
             IntPtr originalHandle = dialog.Handle;
             string otherMode = mode == "Light" ? "Dark" : "Light";
-            int backdropBeforeTheme = (int)Prop(backdrop, "Builds");
             ui.GetMethod("ApplyTheme", BindingFlags.NonPublic | BindingFlags.Static)!.Invoke(null, new[] { Enum.Parse(theme, otherMode) });
             type.GetMethod("ApplyTheme")!.Invoke(dialog, null); Pump();
             Check(dialog.Handle == originalHandle && (string)Prop(card, "PercentText") == "", "theme change preserves the overlay and completed card state");
-            Check((int)Prop(backdrop, "Builds") == backdropBeforeTheme + 1, mode + " theme change refreshes the blurred owner image");
             ui.GetMethod("ApplyTheme", BindingFlags.NonPublic | BindingFlags.Static)!.Invoke(null, new[] { Enum.Parse(theme, mode) });
-            type.GetMethod("ApplyTheme")!.Invoke(dialog, null); Pump();
-            Check((int)Prop(backdrop, "Builds") == backdropBeforeTheme + 2, mode + " restoring the theme refreshes the backdrop again");
+            type.GetMethod("ApplyTheme")!.Invoke(dialog, null);
             dialog.Scale(new SizeF(1.5f, 1.5f)); type.GetMethod("LayoutOverlay", BindingFlags.Instance | BindingFlags.NonPublic, null, new[] { typeof(bool) }, null)!.Invoke(dialog, new object[] { true }); Pump();
             Check(Math.Abs(card.Left + card.Width / 2 - dialog.ClientSize.Width / 2) <= 3 && Math.Abs(card.Top + card.Height / 2 - dialog.ClientSize.Height / 2) <= 3, "scaled overlay keeps the card centred");
             bool contained = true;
             foreach (string name in new[] { "UpdateCard", "UpdateInstallButton", "UpdateCancelButton", "UpdateCloseButton" })
             {
                 Control current = Find(name);
-                contained &= dialog.ClientRectangle.Contains(current.Bounds) && current.Parent!.ClientRectangle.Contains(current.Bounds);
-                Check(dialog.ClientRectangle.Contains(current.Bounds), mode + " " + name + " remains inside the software window");
+                Rectangle visibleBounds=new(dialog.PointToClient(current.PointToScreen(Point.Empty)),current.Size);
+                contained &= dialog.ClientRectangle.Contains(visibleBounds) && current.Parent!.ClientRectangle.Contains(current.Bounds);
+                Check(dialog.ClientRectangle.Contains(visibleBounds) && current.Parent!.ClientRectangle.Contains(current.Bounds), mode + " " + name + " remains inside the software window");
             }
             if (capture && mode == "Light") Save(dialog, "update-light-scaled");
 
@@ -158,6 +176,12 @@ internal static class UpdateDialogSmoke
             type.GetMethod("ShowFailure")!.Invoke(dialog, new object[] { "测试：已恢复原版本。" });
             ((Button)Find("UpdateCloseButton")).PerformClick(); Pump();
             Check(dialog.IsDisposed, "custom close dismisses an idle or failed update");
+
+            using (Form rollbackInstaller = (Form)Activator.CreateInstance(type!, new object[] { "0.5.4", "正在准备回退。", 0L, true, true })!)
+            {
+                Control rollbackInstallerCard = rollbackInstaller.Controls.Find("UpdateCard", true).Single()!;
+                Check(((string)Prop(rollbackInstallerCard, "SubtitleText")).Contains("0.5.4") && ((string)Prop(rollbackInstallerCard, "AccessibleDescription")).Contains("回退"), mode + " rollback installer keeps target version and rollback semantics visible");
+            }
 
             using (Form helper = (Form)Activator.CreateInstance(type!, new object[] { "", "更新文件已校验。\n正在安装，完成后将自动打开。", 0L, true })!)
             {

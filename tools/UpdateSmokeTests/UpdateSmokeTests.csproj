@@ -11,6 +11,7 @@
     <Compile Include="..\..\ClipBridge\Windows\UpdateProtocol.cs" Link="UpdateProtocol.cs" />
     <Compile Include="..\..\ClipBridge\Windows\UpdateProtocolException.cs" Link="UpdateProtocolException.cs" />
     <Compile Include="..\..\ClipBridge\Windows\AvailableUpdate.cs" Link="AvailableUpdate.cs" />
+    <Compile Include="..\..\ClipBridge\Windows\GitHubReleaseCatalog.cs" Link="GitHubReleaseCatalog.cs" />
     <EmbeddedResource Include="..\..\release-signing-public-key.txt" LogicalName="ClipBridge.release-signing-public-key.txt" />
   </ItemGroup>
 </Project>

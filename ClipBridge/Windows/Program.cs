@@ -37,7 +37,9 @@ internal static class Program
 				using var context = new TrayAppContext(eventWaitHandle);
                 bool updated = Array.Exists(args, argument => argument == "--updated");
                 bool rolledBack = Array.Exists(args, argument => argument == "--update-rolled-back");
-                if (updated || rolledBack) context.ShowAfterUpdate(rolledBack, () => SignalUpdateReady(args));
+                int rollbackVersionIndex = Array.IndexOf(args, "--rollback-version");
+                string? rollbackVersion = rollbackVersionIndex >= 0 && rollbackVersionIndex + 1 < args.Length ? args[rollbackVersionIndex + 1] : null;
+                if (updated || rolledBack) context.ShowAfterUpdate(rolledBack, () => SignalUpdateReady(args), rollbackVersion);
                 Application.Run(context);
 			}
 			catch (Exception ex) when ((ex is SocketException || ex is CryptographicException || ex is IOException || ex is InvalidOperationException) ? true : false)

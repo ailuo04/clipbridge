@@ -6,6 +6,7 @@ using System.Linq;
 using System.Net;
 using System.Net.NetworkInformation;
 using System.Net.Sockets;
+using System.Runtime.InteropServices;
 using System.Windows.Forms;
 
 namespace ClipBridge.Windows;
@@ -18,6 +19,39 @@ internal sealed record PairingNetworkAddress(string Adapter, IPAddress Address, 
 // Owns the address selection and QR bitmap so device-list refreshes keep them intact.
 internal sealed class PairingQrPanel : Panel
 {
+    [StructLayout(LayoutKind.Sequential)]
+    private struct NativeRect { public int Left, Top, Right, Bottom; }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct ComboBoxInfo
+    {
+        public int Size;
+        public NativeRect Item;
+        public NativeRect Button;
+        public uint ButtonState;
+        public IntPtr Combo;
+        public IntPtr ItemWindow;
+        public IntPtr ListWindow;
+    }
+
+    [DllImport("user32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool GetComboBoxInfo(IntPtr combo, ref ComboBoxInfo info);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool GetWindowRect(IntPtr window, out NativeRect bounds);
+
+    [DllImport("gdi32.dll", SetLastError = true)]
+    private static extern IntPtr CreateRoundRectRgn(int left, int top, int right, int bottom, int ellipseWidth, int ellipseHeight);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    private static extern int SetWindowRgn(IntPtr window, IntPtr region, bool redraw);
+
+    [DllImport("gdi32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool DeleteObject(IntPtr handle);
+
     private readonly string _deviceId;
     private readonly Func<PairingNetworkAddress[]> _getAddresses;
     private readonly List<Font> _fonts = new();
@@ -29,7 +63,8 @@ internal sealed class PairingQrPanel : Panel
     private readonly ComboBox _addresses = new()
     {
         Name = "PairingQrAddresses", DropDownStyle = ComboBoxStyle.DropDownList,
-        AccessibleName = "电脑局域网地址", Margin = Padding.Empty, IntegralHeight = false
+        AccessibleName = "电脑局域网地址", Margin = Padding.Empty, IntegralHeight = false,
+        DrawMode = DrawMode.OwnerDrawFixed, FlatStyle = FlatStyle.Flat, ItemHeight = 22
     };
     private readonly PictureBox _image = new()
     {
@@ -60,6 +95,8 @@ internal sealed class PairingQrPanel : Panel
         _unavailable.BackColor = Color.White;
         _image.Controls.Add(_unavailable);
         _addresses.Font = OwnedFont(8.7f);
+        _addresses.DrawItem += DrawAddress;
+        _addresses.DropDown += (_, _) => ApplyRoundedAddressDropDown();
         _addresses.SelectedIndexChanged += (_, _) => { if (!_refreshing) UpdateCode(); };
         Controls.AddRange(new Control[] { _title, _instructions, _addressLabel, _addresses, _status, _image });
         ApplyTheme();
@@ -80,6 +117,31 @@ internal sealed class PairingQrPanel : Panel
 
     private int Pixels(int value) => (int)Math.Round(value * DeviceDpi / 96.0);
     private bool IsWide(int width) => width >= Pixels(460);
+
+    private static void DrawAddress(object? sender, DrawItemEventArgs e)
+    {
+        if (e.Index < 0 || sender is not ComboBox combo || e.Index >= combo.Items.Count) return;
+        bool selected = (e.State & DrawItemState.Selected) != 0;
+        Color background = selected ? Ui.AccentSoftSolid : Ui.FieldSurface;
+        Color foreground = selected ? Ui.Accent : Ui.Ink;
+        using var brush = new SolidBrush(background);
+        e.Graphics.FillRectangle(brush, e.Bounds);
+        TextRenderer.DrawText(e.Graphics, combo.GetItemText(combo.Items[e.Index]), combo.Font,
+            Rectangle.Inflate(e.Bounds, -8, 0), foreground,
+            TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.SingleLine | TextFormatFlags.EndEllipsis);
+        e.DrawFocusRectangle();
+    }
+
+    private void ApplyRoundedAddressDropDown()
+    {
+        if (!_addresses.IsHandleCreated) return;
+        var info = new ComboBoxInfo { Size = Marshal.SizeOf<ComboBoxInfo>() };
+        if (!GetComboBoxInfo(_addresses.Handle, ref info) || info.ListWindow == IntPtr.Zero) return;
+        if (!GetWindowRect(info.ListWindow, out var bounds)) return;
+        IntPtr region = CreateRoundRectRgn(0, 0, bounds.Right - bounds.Left + 1, bounds.Bottom - bounds.Top + 1, Pixels(12), Pixels(12));
+        if (region == IntPtr.Zero) return;
+        if (SetWindowRgn(info.ListWindow, region, true) == 0) DeleteObject(region);
+    }
 
     public override Size GetPreferredSize(Size proposedSize)
     {

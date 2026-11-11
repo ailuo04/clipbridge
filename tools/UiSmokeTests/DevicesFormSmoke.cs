@@ -107,6 +107,7 @@ internal static class DevicesFormSmoke
         Size initialClientSize = form.ClientSize;
         Check(!Descendants(form).OfType<Button>().Any(button => button.Name == "ShowPairingQrButton"), "QR is displayed inline without a separate display button");
         Check(Descendants(form).OfType<PictureBox>().Any(image => image.Name == "PairingQrImage" && image.Visible), "QR area is visible immediately after opening");
+        Check(Descendants(form).Where(control => control.GetType().Name == "IconTile").All(control => control.BackColor.A == 255), "device icons paint against an opaque themed surface");
         Check(!Descendants(form).OfType<TextBox>().Single().Visible, "manual IP input is hidden by default");
         Button? manualToggle = Descendants(form).OfType<Button>().FirstOrDefault(button => button.Name == "ManualPairingToggle");
         Check(manualToggle != null && manualToggle.Text.Contains("备用"), "IP pairing is explicitly marked as a backup option");

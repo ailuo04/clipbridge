@@ -32,6 +32,9 @@ internal sealed class ModernButton : Button
 	[System.ComponentModel.DesignerSerializationVisibility(System.ComponentModel.DesignerSerializationVisibility.Hidden)]
 	public string Glyph { get; set; }
 
+	[System.ComponentModel.DesignerSerializationVisibility(System.ComponentModel.DesignerSerializationVisibility.Hidden)]
+	public Color GlyphColor { get; set; }
+
 	public double MotionProgress => Math.Max(_hover, Math.Max(_pressed, 1.0 - _rippleProgress));
 
 	public ModernButton(string text, ButtonTone tone = ButtonTone.Secondary, string glyph = "")
@@ -39,6 +42,7 @@ internal sealed class ModernButton : Button
 		Text = text;
 		Tone = tone;
 		Glyph = glyph;
+		GlyphColor = Color.Empty;
 		Font = Ui.Font(9f);
 		AutoSize = true;
 		AutoSizeMode = AutoSizeMode.GrowAndShrink;
@@ -75,6 +79,7 @@ internal sealed class ModernButton : Button
 
 	public override Size GetPreferredSize(Size proposedSize)
 	{
+		if (string.IsNullOrEmpty(Text) && !string.IsNullOrEmpty(Glyph)) return new Size(36, 36);
 		Size size = TextRenderer.MeasureText(Text, Font, Size.Empty, TextFormatFlags.SingleLine);
 		int num = ((!string.IsNullOrEmpty(Glyph)) ? 23 : 0);
 		return new Size(Math.Max(72, size.Width + num + 26), 34);
@@ -101,7 +106,7 @@ internal sealed class ModernButton : Button
 			color2 = VisualMotion.Mix(Ui.Line, Ui.Accent, _hover * 0.45 + _pressed * 0.3);
 			break;
 		case ButtonTone.Ghost:
-			color = VisualMotion.Mix(Ui.Surface, Ui.SurfaceHover, _hover);
+			color = VisualMotion.Mix(Parent?.BackColor ?? Ui.Canvas, Ui.SurfaceHover, _hover);
 			foreColor = Ui.Muted;
 			break;
 		case ButtonTone.Danger:
@@ -160,13 +165,15 @@ internal sealed class ModernButton : Button
 			};
 			VisualDrawing.DrawRoundedRectangle(e.Graphics, pen2, bounds, 10f);
 		}
-		Size size = TextRenderer.MeasureText(Text, Font, Size.Empty, TextFormatFlags.SingleLine | TextFormatFlags.NoPadding);
+		Size size = string.IsNullOrEmpty(Text) ? Size.Empty : TextRenderer.MeasureText(Text, Font, Size.Empty, TextFormatFlags.SingleLine | TextFormatFlags.NoPadding);
 		int num3 = ((!string.IsNullOrEmpty(Glyph)) ? 22 : 0);
 		int num4 = size.Width + num3;
-		int num5 = Math.Max(10, (Width - num4) / 2);
+		int num5 = TextAlign == ContentAlignment.MiddleLeft ? 14 : Math.Max(8, (Width - num4) / 2);
+		if (string.IsNullOrEmpty(Text) && !string.IsNullOrEmpty(Glyph)) num5 = (Width - 18) / 2;
 		if (!string.IsNullOrEmpty(Glyph))
 		{
-			TextRenderer.DrawText(e.Graphics, Glyph, _glyphFont, new Rectangle(num5, 0, 18, Height), foreColor, TextFormatFlags.SingleLine | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding);
+			Color glyphColor = Enabled && !GlyphColor.IsEmpty ? GlyphColor : foreColor;
+			TextRenderer.DrawText(e.Graphics, Glyph, _glyphFont, new Rectangle(num5, 0, 18, Height), glyphColor, TextFormatFlags.SingleLine | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding);
 			num5 += 22;
 		}
 		TextRenderer.DrawText(e.Graphics, Text, Font, new Rectangle(num5, 0, Math.Max(1, Width - num5 - 9), Height), foreColor, TextFormatFlags.EndEllipsis | TextFormatFlags.SingleLine | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding);
