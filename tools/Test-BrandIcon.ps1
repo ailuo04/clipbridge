@@ -26,11 +26,11 @@ Assert-True ($manifestText -match 'android:icon="@mipmap/ic_clipbridge"') 'Andro
 Assert-True ($manifestText -match 'android:roundIcon="@mipmap/ic_clipbridge"') 'Android manifest declares round adaptive icon'
 
 $backgroundText = Get-Content -Raw -LiteralPath $backgroundPath
-Assert-True ($backgroundText -match 'android:type="linear"' -and $backgroundText -match '#FAFCFF' -and $backgroundText -match '#DAE7FC') 'Android tile uses the matching clear glass gradient'
+Assert-True ($backgroundText -match 'android:type="linear"' -and $backgroundText -match '#061C65' -and $backgroundText -match '#073DB5') 'Android tile uses the matching blue-violet gradient'
 
 $adaptiveText = Get-Content -Raw -LiteralPath $adaptivePath
 Assert-True ($adaptiveText -match '@drawable/clipbridge_brand') 'Adaptive icon references shared foreground'
-Assert-True ($adaptiveText -match '@drawable/clipbridge_icon_background') 'Adaptive icon references glass background'
+Assert-True ($adaptiveText -match '@drawable/clipbridge_icon_background') 'Adaptive icon references matching background'
 
 $iconBytes = [IO.File]::ReadAllBytes($icoPath)
 Assert-True ($iconBytes.Length -ge 6) 'Windows ICO has a complete header'
