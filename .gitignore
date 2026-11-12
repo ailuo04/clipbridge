@@ -24,3 +24,7 @@ android/.gradle/
 android/.kotlin/
 android/local.properties
 **/build/
+
+# Local IDE settings and design-session temporary files
+.idea/
+/.superpowers/
