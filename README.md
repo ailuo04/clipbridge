@@ -1,15 +1,23 @@
 # 互传 ClipBridge
 
-当前 Windows 版本：**0.5.10**
+当前 Windows 版本：**0.6.0**
 
-[下载安装器](https://github.com/ailuo04/clipbridge/releases/download/v0.5.10/ClipBridge-0.5.10-win-x64-Setup.exe) · [发行版与更新说明](https://github.com/ailuo04/clipbridge/releases/tag/v0.5.10)
+[下载安装器](https://github.com/ailuo04/clipbridge/releases/download/v0.6.0/ClipBridge-0.6.0-win-x64-Setup.exe) · [发行版与更新说明](https://github.com/ailuo04/clipbridge/releases/tag/v0.6.0)
 
 ## 更新内容
 
-更新 Windows 与 Android 应用图标
-- 采用统一的彩色双向数据流图标，以通用端点表达任意设备之间互传。
-- Windows 图标提供 16 至 256 像素的七档尺寸及透明圆角，用于程序、窗口、托盘和安装器。
-- Android 图标适配自适应遮罩与安全边距，并采用匹配的蓝紫渐变背景。
+界面层次重构，旧控制面板彻底移除
+- 侧栏、会话标题栏、消息区与输入区拆成四个独立层次：侧栏使用独立底色并加右侧分隔线，标题栏为抬升面板加底部细线，底部状态独立成条。
+- 消息气泡明确区分收发：接收为白色卡片加描边与投影，发送为实心品牌蓝加浅色文字，一眼可辨方向。
+- 文件卡片内部拆分为图标块、加粗文件名和弱化的大小信息，不再把名称和大小挤在同一行同一字重。
+- 时间线按天分组，跨天消息之间插入日期分隔标记，一周的传输记录不再连成一片。
+- 设备行新增未读徽标与在线光晕，选中态用强调色描边和左侧标记；设备列表与底部操作区之间补上分界线。
+- 输入框改为可见的内凹底色，次要按钮补上可读描边，禁用的发送按钮不再与背景同色。
+- 会话标题旁新增在线/离线状态胶囊，状态行改为显示配对地址与临时结果。
+- 明暗两套主题重新标定画布、面板、内凹与描边色阶，卡片在两种主题下都清晰可辨。
+- 移除旧控制面板及其独立窗口，以及仅被它们引用的 15 个控件，共 20 个文件约 3900 行；应用现在只保留一套 WorkspaceForm 界面。
+- 冒烟测试改为只覆盖新界面，并新增退役守卫，防止旧界面类型被重新引入。
+- 传输协议、更新协议、签名校验与配对流程均未改动，0.5.x 可直接自动更新到本版本。
 
 ## 安装与自动更新
 
@@ -18,7 +26,7 @@
 - 0.3.10 及以后安装器需要管理员权限创建安装目录；安装目录会授予当前用户 Modify 权限，后续更新无需重复 UAC。
 - 缺少 .NET 10 桌面运行时时，安装器从 Microsoft 官方下载、校验并请求管理员授权安装。
 - 安装器未进行 Authenticode 代码签名。
-- Android APK：[下载安装](https://github.com/ailuo04/clipbridge/releases/download/v0.5.10/ClipBridge-0.5.10-android.apk)；手动配对和发送步骤见 [安卓说明](android/README.md)。
+- Android APK：[下载安装](https://github.com/ailuo04/clipbridge/releases/download/v0.6.0/ClipBridge-0.6.0-android.apk)；手动配对和发送步骤见 [安卓说明](android/README.md)。
 
 ## 开发与发布
 
