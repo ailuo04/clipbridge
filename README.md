@@ -1,21 +1,18 @@
 # 互传 ClipBridge
 
-当前 Windows 版本：**0.6.1**
+当前 Windows 版本：**0.6.2**
 
-[下载安装器](https://github.com/ailuo04/clipbridge/releases/download/v0.6.1/ClipBridge-0.6.1-win-x64-Setup.exe) · [发行版与更新说明](https://github.com/ailuo04/clipbridge/releases/tag/v0.6.1)
+[下载安装器](https://github.com/ailuo04/clipbridge/releases/download/v0.6.2/ClipBridge-0.6.2-win-x64-Setup.exe) · [发行版与更新说明](https://github.com/ailuo04/clipbridge/releases/tag/v0.6.2)
 
 ## 更新内容
 
-界面改为扁平分区，聊天体验向常用聊天软件看齐
-- 侧栏、标题栏、消息区、输入区用不同底色和细线分区，去掉卡片投影与渐变，浅色主题改为中性灰。
-- 消息两侧显示设备头像：对方是手机显示手机图标，是电脑显示电脑图标，侧栏列表同步。
-- 发送和接收的单张图片直接以图片预览显示；电脑端会保留缩略图，原图移走后仍可看到。
-- 输入框改为带边框的独立输入区，获得焦点时边框高亮，不再与背景混在一起。
-- 每条消息旁新增"•••"更多按钮（电脑也可右键，手机也可长按），可复制、打开或删除。
-- 删除一条记录会同时删除本机已接收的文件，删除前会确认；你发送的原文件不会被删除。
-- 设备菜单新增"清空聊天记录"，一次删除与该设备的全部记录和本机接收文件。
-- 电脑端与手机端的删除、清空、头像和图片预览行为保持一致，删除会同步到对方的记录。
-- 传输协议、更新协议、签名校验与配对流程均未改动，0.5.x 和 0.6.0 可直接自动更新到本版本。
+Windows 0.6.2
+- 修复“回退到历史版本”因 GitHub 匿名 API 限流（HTTP 403/429）而无法读取的问题，受限时自动通过 GitHub 官方发布网页分页读取历史版本。
+- 修复程序集四段版本号与发布标签三段版本号比较不一致的问题，避免将当前版本误列为可回退目标，并拒绝回退到相同版本。
+- 历史版本继续使用 RSA 签名清单以及 HTTPS、安装包大小和 SHA-256 校验。
+
+Android 0.6.2
+- 同步发布版本号，本次无 Android 功能变更。
 
 ## 安装与自动更新
 
@@ -24,7 +21,7 @@
 - 0.3.10 及以后安装器需要管理员权限创建安装目录；安装目录会授予当前用户 Modify 权限，后续更新无需重复 UAC。
 - 缺少 .NET 10 桌面运行时时，安装器从 Microsoft 官方下载、校验并请求管理员授权安装。
 - 安装器未进行 Authenticode 代码签名。
-- Android APK：[下载安装](https://github.com/ailuo04/clipbridge/releases/download/v0.6.1/ClipBridge-0.6.1-android.apk)；手动配对和发送步骤见 [安卓说明](android/README.md)。
+- Android APK：[下载安装](https://github.com/ailuo04/clipbridge/releases/download/v0.6.2/ClipBridge-0.6.2-android.apk)；手动配对和发送步骤见 [安卓说明](android/README.md)。
 
 ## 开发与发布
 
