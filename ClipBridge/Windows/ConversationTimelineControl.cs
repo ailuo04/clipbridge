@@ -24,17 +24,24 @@ internal sealed class ConversationTimelineControl : UserControl
         ForeColor = Ui.Muted,
         Text = "选择设备后，这里会显示最近 7 天的收发记录。"
     };
+    // One message with its sender's avatar: the peer's device on the left, this
+    // computer on the right, the way chat clients lay out a conversation.
     private sealed class MessageRow : Panel
     {
+        private const int Avatar = 34;
+        private const int Gutter = Avatar + 10;
         public HistoryEntryControl Bubble { get; }
         private readonly bool _outgoing;
+        private readonly bool _peerIsComputer;
 
-        public MessageRow(HistoryEntryControl bubble, bool outgoing)
+        public MessageRow(HistoryEntryControl bubble, bool outgoing, bool peerIsComputer)
         {
             Bubble = bubble;
             _outgoing = outgoing;
-            Margin = new Padding(0, 0, 0, 8);
-            Height = bubble.Height;
+            _peerIsComputer = peerIsComputer;
+            SetStyle(ControlStyles.UserPaint | ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer | ControlStyles.ResizeRedraw, true);
+            Margin = new Padding(0, 0, 0, 6);
+            Height = Math.Max(Avatar, bubble.Height);
             Controls.Add(bubble);
             LayoutBubble();
             Resize += (_, _) => LayoutBubble();
@@ -42,13 +49,23 @@ internal sealed class ConversationTimelineControl : UserControl
 
         private void LayoutBubble()
         {
-            int width = Math.Max(120, (int)(ClientSize.Width * 0.78));
-            Bubble.Width = Math.Min(Bubble.PreferredBubbleWidth, width);
+            int lane = Math.Max(80, ClientSize.Width - Gutter * 2);
+            int width = Math.Max(120, (int)(lane * 0.82));
+            Bubble.Width = Math.Min(Bubble.PreferredBubbleWidth, Math.Min(width, Math.Max(60, ClientSize.Width - Gutter)));
             Bubble.Left = HistoryPresentation.Alignment(_outgoing) == HorizontalAlignment.Right
-                ? Math.Max(0, ClientSize.Width - Bubble.Width)
-                : 0;
+                ? Math.Max(0, ClientSize.Width - Gutter - Bubble.Width)
+                : Gutter;
             Bubble.Top = 0;
-            Height = Bubble.Height;
+            Height = Math.Max(Avatar, Bubble.Height);
+        }
+
+        protected override void OnPaint(PaintEventArgs e)
+        {
+            base.OnPaint(e);
+            e.Graphics.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
+            RectangleF tile = new(_outgoing ? ClientSize.Width - Avatar - 1 : 0, 0, Avatar, Avatar);
+            // This computer is neutral; the other device carries the accent.
+            VisualDrawing.DrawDeviceAvatar(e.Graphics, tile, _outgoing ? false : !_peerIsComputer, _outgoing ? Ui.Faint : Ui.PrimarySurface, Ui.PrimaryInk);
         }
     }
 
@@ -62,6 +79,10 @@ internal sealed class ConversationTimelineControl : UserControl
     public bool IsAtLatest => _rows.Count==0 || -_list.AutoScrollPosition.Y+_list.ClientSize.Height>=_list.DisplayRectangle.Height-40;
     private (int Y,bool Follow)? _restorePosition;
     public void SelectPartition(string peerId) { if(_partition==peerId)return;if(_partition!=null)_positions[_partition]=(-_list.AutoScrollPosition.Y,IsAtLatest);_partition=peerId;_restorePosition=_positions.TryGetValue(peerId,out var saved)?saved:(0,true);_signature=""; }
+
+    // Picks the avatar drawn beside the peer's messages.
+    [System.ComponentModel.DesignerSerializationVisibility(System.ComponentModel.DesignerSerializationVisibility.Hidden)]
+    public bool PeerIsComputer { get; set; }
 
     public event Action<HistoryLocalRecord>? DeleteRequested;
     public event Action<HistoryLocalRecord>? CopyRequested;
@@ -85,7 +106,7 @@ internal sealed class ConversationTimelineControl : UserControl
         bool follow = _rows.Count == 0 || -_list.AutoScrollPosition.Y + _list.ClientSize.Height >= _list.DisplayRectangle.Height - 40;
         int savedY = -_list.AutoScrollPosition.Y;
         if(_restorePosition is { } restore){savedY=restore.Y;follow=restore.Follow;_restorePosition=null;}
-        string signature = localDeviceId + ":" + DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() / (24L * 60 * 60 * 1000) + ":" + string.Join("\\n", values.Select(entry => entry.Event.PeerId + ":" + entry.Event.EventId + ":" + entry.Event.CreatedUtc + ":" + entry.Event.State + ":" + entry.LocalFileReferences.Count));
+        string signature = localDeviceId + ":" + PeerIsComputer + ":" + DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() / (24L * 60 * 60 * 1000) + ":" + string.Join("\\n", values.Select(entry => entry.Event.PeerId + ":" + entry.Event.EventId + ":" + entry.Event.CreatedUtc + ":" + entry.Event.State + ":" + entry.LocalFileReferences.Count));
         if (signature == _signature) return;
         _signature = signature;
         _entries=values;
@@ -109,7 +130,7 @@ internal sealed class ConversationTimelineControl : UserControl
                     var marker = new DaySeparator(day)
                     {
                         Width = Math.Max(260, _list.ClientSize.Width - SystemInformation.VerticalScrollBarWidth - 8),
-                        Margin = new Padding(0, 0, 0, 6)
+                        Margin = new Padding(0, 0, 0, 2)
                     };
                     _separators.Add(marker);
                     _order.Add(marker);
@@ -117,7 +138,7 @@ internal sealed class ConversationTimelineControl : UserControl
                 }
                 var bubble = new HistoryEntryControl(entry, localDeviceId);
                 bool outgoing = string.Equals(entry.Event.SenderDeviceId, localDeviceId, StringComparison.Ordinal);
-                var row = new MessageRow(bubble, outgoing)
+                var row = new MessageRow(bubble, outgoing, PeerIsComputer)
                 {
                     Width = Math.Max(260, _list.ClientSize.Width - SystemInformation.VerticalScrollBarWidth - 8),
                     MinimumSize = new Size(260, 0)

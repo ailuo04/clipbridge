@@ -82,7 +82,13 @@ class UiPresentationTest {
         val text = app.clipbridge.history.HistoryLocalRecord(event)
         assertEquals("7 天后过期", UiPresentation.expiryLabel(now, now))
         assertTrue(UiPresentation.historyActions(text).contains("复制"))
-        assertTrue(UiPresentation.historyActions(text).contains("删除记录"))
-        assertFalse(UiPresentation.historyActions(text).any { it.contains("删除文件") })
+        assertTrue(UiPresentation.historyActions(text).contains("删除"))
+        // Deleting removes ClipBridge's received copy, never an original the user picked to send.
+        assertTrue(UiPresentation.ownsLocalFile(false, "media"))
+        assertTrue(UiPresentation.ownsLocalFile(false, "app.clipbridge.received"))
+        assertFalse(UiPresentation.ownsLocalFile(true, "media"))
+        assertFalse(UiPresentation.ownsLocalFile(false, "com.android.providers.media.documents"))
+        assertTrue(UiPresentation.isComputer("windows"))
+        assertFalse(UiPresentation.isComputer("Android"))
     }}
 

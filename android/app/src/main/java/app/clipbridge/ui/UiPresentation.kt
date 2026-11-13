@@ -26,8 +26,18 @@ object UiPresentation {
     }
 
     fun historyActions(entry: HistoryLocalRecord): List<String> = if (entry.event.contentType == "file") {
-        if (entry.localFileReferences.isNotEmpty()) listOf("打开本地文件", "分享", "删除记录") else listOf("删除记录")
-    } else listOf("复制", "分享", "删除记录")
+        if (entry.localFileReferences.isNotEmpty()) listOf("打开本地文件", "分享", "删除") else listOf("删除")
+    } else listOf("复制", "分享", "删除")
+
+    /**
+     * Deleting an entry also removes the copy ClipBridge saved for it: a received file in
+     * Download or in the app's own folder. A file the user picked to send is their original and stays.
+     */
+    fun ownsLocalFile(isOutgoing: Boolean, authority: String?): Boolean =
+        authority == "app.clipbridge.received" || (!isOutgoing && authority == "media")
+
+    /** Phones and computers get different avatars; an unknown platform is treated as a computer. */
+    fun isComputer(platform: String): Boolean = !platform.contains("android", true) && !platform.contains("ios", true)
 
     fun expiryLabel(createdUtc: Long, nowUtc: Long): String {
         val remaining = createdUtc + HistoryPolicy.SEVEN_DAYS_MILLIS - nowUtc

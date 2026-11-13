@@ -85,6 +85,8 @@ internal sealed class ModernButton : Button
 		return new Size(Math.Max(72, size.Width + num + 26), 34);
 	}
 
+	private const float Radius = 7f;
+
 	protected override void OnPaint(PaintEventArgs e)
 	{
 		base.OnPaintBackground(e);
@@ -121,33 +123,20 @@ internal sealed class ModernButton : Button
 			color2 = Ui.Line;
 			foreColor = Ui.Faint;
 		}
-		if (Tone == ButtonTone.Primary && Enabled)
+		// Flat fills throughout: the primary action stands out by colour alone.
+		using (SolidBrush brush = new SolidBrush(color))
 		{
-			// Soft accent-tinted drop shadow under the primary action.
-			RectangleF shadow = rectangleF;
-			shadow.Offset(0f, 2f);
-			using (SolidBrush shadowBrush = new SolidBrush(Color.FromArgb((int)(34 + 22 * _hover), Ui.PrimarySurface)))
-			{
-				VisualDrawing.FillRoundedRectangle(e.Graphics, shadowBrush, shadow, 10f);
-			}
-			Color top = VisualMotion.Mix(color, Color.White, Ui.HeaderIsDark ? 0.10 : 0.16);
-			using LinearGradientBrush gradient = new LinearGradientBrush(rectangleF, top, color, 90f);
-			VisualDrawing.FillRoundedRectangle(e.Graphics, gradient, rectangleF, 10f);
+			VisualDrawing.FillRoundedRectangle(e.Graphics, brush, rectangleF, Radius);
 		}
-		else
-		{
-			using SolidBrush brush = new SolidBrush(color);
-			VisualDrawing.FillRoundedRectangle(e.Graphics, brush, rectangleF, 10f);
-		}
-		if (color2.A > 0)
+		if (color2.A > 0 && !(Tone == ButtonTone.Primary && Enabled))
 		{
 			using Pen pen = new Pen(color2, 1f);
-			VisualDrawing.DrawRoundedRectangle(e.Graphics, pen, rectangleF, 10f);
+			VisualDrawing.DrawRoundedRectangle(e.Graphics, pen, rectangleF, Radius);
 		}
 		if (_rippleProgress < 1.0 && Enabled)
 		{
 			GraphicsState gstate = e.Graphics.Save();
-			using GraphicsPath clip = VisualDrawing.RoundedRectangle(rectangleF, 10f);
+			using GraphicsPath clip = VisualDrawing.RoundedRectangle(rectangleF, Radius);
 			e.Graphics.SetClip(clip);
 			float num2 = (float)(Math.Sqrt(Width * Width + Height * Height) * _rippleProgress);
 			using (SolidBrush brush2 = new SolidBrush(Color.FromArgb((int)(42.0 * (1.0 - _rippleProgress)), Color.White)))
@@ -163,7 +152,7 @@ internal sealed class ModernButton : Button
 			{
 				DashStyle = DashStyle.Dot
 			};
-			VisualDrawing.DrawRoundedRectangle(e.Graphics, pen2, bounds, 10f);
+			VisualDrawing.DrawRoundedRectangle(e.Graphics, pen2, bounds, Radius);
 		}
 		Size size = string.IsNullOrEmpty(Text) ? Size.Empty : TextRenderer.MeasureText(Text, Font, Size.Empty, TextFormatFlags.SingleLine | TextFormatFlags.NoPadding);
 		int num3 = ((!string.IsNullOrEmpty(Glyph)) ? 22 : 0);

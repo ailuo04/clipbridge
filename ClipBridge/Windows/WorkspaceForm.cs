@@ -21,10 +21,10 @@ internal sealed class WorkspaceForm : Form
     private readonly Action<string> _revoke;
     private readonly Action _checkUpdate;
     private readonly Action<UiThemeMode> _setTheme;
-    private readonly SidebarSurface _sidebar = new() { Dock = DockStyle.Fill, Padding = new Padding(14, 22, 14, 14) };
+    private readonly SidebarSurface _sidebar = new() { Dock = DockStyle.Fill, Padding = new Padding(10, 18, 11, 12) };
     private readonly FlowLayoutPanel _deviceList = new() { Name = "WorkspaceDevices", Dock = DockStyle.Fill, FlowDirection = FlowDirection.TopDown, WrapContents = false, AutoScroll = true };
     private readonly Panel _content = new() { Name = "WorkspaceContent", Dock = DockStyle.Fill };
-    private readonly StatusStripLabel _status = new() { Dock = DockStyle.Bottom, Height = 28, TextAlign = ContentAlignment.MiddleLeft, AutoEllipsis = true, Padding = new Padding(16, 1, 12, 0), Font = Ui.Font(8.5f) };
+    private readonly StatusStripLabel _status = new() { Dock = DockStyle.Bottom, Height = 26, TextAlign = ContentAlignment.MiddleLeft, AutoEllipsis = true, Padding = new Padding(16, 1, 12, 0), Font = Ui.Font(8.5f) };
     private readonly ModernButton _folder = new("接收文件夹", ButtonTone.Ghost, "\uE8B7") { Name = "WorkspaceReceiveFolder", AutoSize = false, TextAlign = ContentAlignment.MiddleLeft, Dock = DockStyle.Fill, Margin = Padding.Empty, AccessibleName = "打开接收文件夹" };
     private readonly ModernButton _settings = new("设置", ButtonTone.Ghost, "\uE713") { Name = "WorkspaceSettings", AutoSize = false, TextAlign = ContentAlignment.MiddleLeft, Dock = DockStyle.Fill, Margin = Padding.Empty, AccessibleName = "应用设置" };
     private readonly ModernButton _update = new("当前为最新版", ButtonTone.Ghost) { Name = "WorkspaceUpdates", AutoSize = false, TextAlign = ContentAlignment.MiddleCenter, Dock = DockStyle.Fill, Margin = new Padding(2, 1, 2, 1), AccessibleName = "检查 ClipBridge 更新" };
@@ -62,15 +62,15 @@ internal sealed class WorkspaceForm : Form
         _history = history; _localId = localId; _getPeers = getPeers; _openFolder = openFolder; _revoke = revoke; _checkUpdate = checkUpdate; _setTheme = setTheme; _devicesPage = devicesPage; _statePath = statePath;
         Text = "ClipBridge · 互传"; Icon = AppIcon.Load(); StartPosition = FormStartPosition.CenterScreen; ClientSize = new Size(1080, 760); MinimumSize = new Size(820, 620); Font = Ui.Font(9.5f); DoubleBuffered = true; AutoScaleMode = AutoScaleMode.Dpi;
         LoadState();
-        var grid = new TableLayoutPanel { Name = "WorkspaceRoot", Dock = DockStyle.Fill, ColumnCount = 2, RowCount = 1, Margin = Padding.Empty }; grid.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 236)); grid.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100)); grid.Controls.Add(_sidebar, 0, 0); grid.Controls.Add(_content, 1, 0); Controls.Add(grid); Controls.Add(_pageTransition); _pageTransition.BringToFront(); Resize += (_, _) => _pageTransition.Finish();
+        var grid = new TableLayoutPanel { Name = "WorkspaceRoot", Dock = DockStyle.Fill, ColumnCount = 2, RowCount = 1, Margin = Padding.Empty }; grid.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 244)); grid.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100)); grid.Controls.Add(_sidebar, 0, 0); grid.Controls.Add(_content, 1, 0); Controls.Add(grid); Controls.Add(_pageTransition); _pageTransition.BringToFront(); Resize += (_, _) => _pageTransition.Finish();
         var nav = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 5, Margin = Padding.Empty }; nav.RowStyles.Add(new RowStyle(SizeType.Absolute, 74)); nav.RowStyles.Add(new RowStyle(SizeType.Absolute, 56)); nav.RowStyles.Add(new RowStyle(SizeType.Absolute, 28)); nav.RowStyles.Add(new RowStyle(SizeType.Percent, 100)); nav.RowStyles.Add(new RowStyle(SizeType.Absolute, 203)); _sidebar.Controls.Add(nav);
-        var brand = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, RowCount = 2, Padding = new Padding(4, 2, 0, 16), Margin = Padding.Empty };
+        var brand = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, RowCount = 2, Padding = new Padding(6, 2, 0, 16), Margin = Padding.Empty };
         brand.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 42)); brand.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         brand.RowStyles.Add(new RowStyle(SizeType.Absolute, 26)); brand.RowStyles.Add(new RowStyle(SizeType.Absolute, 20));
         var mark = new BrandMark { Size = new Size(34, 34), Anchor = AnchorStyles.Left, Margin = Padding.Empty }; brand.Controls.Add(mark, 0, 0); brand.SetRowSpan(mark, 2);
         brand.Controls.Add(new Label { Text = "ClipBridge", Font = Ui.Font(12f, FontStyle.Bold), Dock = DockStyle.Fill, TextAlign = ContentAlignment.BottomLeft, Margin = Padding.Empty }, 1, 0);
         brand.Controls.Add(new Label { Text = Environment.MachineName, Font = Ui.Font(8f), Tag = "muted", Dock = DockStyle.Fill, AutoEllipsis = true, TextAlign = ContentAlignment.MiddleLeft, Margin = Padding.Empty }, 1, 1); nav.Controls.Add(brand, 0, 0);
-        var add = new ModernButton("添加设备", ButtonTone.Secondary, "\uE710") { Name = "WorkspaceAddDevice", AutoSize = false, Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right, Height = 38, Margin = new Padding(2, 8, 6, 10) }; add.Click += (_, _) => ShowDevices(); nav.Controls.Add(add, 0, 1);
+        var add = new ModernButton("添加设备", ButtonTone.Secondary, "\uE710") { Name = "WorkspaceAddDevice", AutoSize = false, Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right, Height = 36, Margin = new Padding(4, 8, 4, 12) }; add.Click += (_, _) => ShowDevices(); nav.Controls.Add(add, 0, 1);
         nav.Controls.Add(new Label { Name = "WorkspaceDevicesHeading", Text = "设备会话", Dock = DockStyle.Fill, Padding = new Padding(10, 6, 0, 0), Tag = "section", Font = Ui.Font(8.25f, FontStyle.Bold) }, 0, 2); nav.Controls.Add(_deviceList, 0, 3);
         _sidebarBottom.RowStyles.Add(new RowStyle(SizeType.Absolute, 14));
         _sidebarBottom.RowStyles.Add(new RowStyle(SizeType.Absolute, 42));
@@ -81,7 +81,6 @@ internal sealed class WorkspaceForm : Form
         _folder.Click += (_, _) => _openFolder();
         _settings.Click += (_, _) => ShowSettings();
         _update.Click += (_, _) => _checkUpdate();
-        _update.SizeChanged += (_, _) => ApplyUpdatePillRegion();
         _updateNow.Click += (_, _) => _openAvailableUpdate?.Invoke();
         var availableLayout = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, RowCount = 1, BackColor = Color.Transparent, Margin = Padding.Empty };
         availableLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
@@ -100,7 +99,7 @@ internal sealed class WorkspaceForm : Form
         Conversation = new(history, localId, getPeers, sendText, sendFiles, openFolder, ShowPeerMenu) { Dock = DockStyle.Fill }; Conversation.SetEmbedded(); _content.Controls.Add(Conversation); _content.Controls.Add(_status);
         if (devicesPage != null) { devicesPage.Dock = DockStyle.Fill; devicesPage.Visible = false; _content.Controls.Add(devicesPage); }
         Conversation.StateChanged += () => { if (!_refreshing) RefreshSidebar(); };
-        _deviceList.SizeChanged += (_, _) => { foreach (Control item in _deviceList.Controls) item.Width = Math.Max(150, _deviceList.ClientSize.Width - SystemInformation.VerticalScrollBarWidth - 2); };
+        _deviceList.SizeChanged += (_, _) => { foreach (Control item in _deviceList.Controls) item.Width = DeviceRowWidth(); }; _deviceList.ClientSizeChanged += (_, _) => { foreach (Control item in _deviceList.Controls) item.Width = DeviceRowWidth(); };
         _saveTimer.Tick += (_, _) => { _saveTimer.Stop(); SaveState(); }; Activated += (_, _) => RefreshSidebar(); ApplyTheme(UiThemeMode.System); RefreshWorkspace();
     }
 
@@ -126,15 +125,15 @@ internal sealed class WorkspaceForm : Form
             var entries = Recent(peer.PeerId, now); if (_page == "chat" && Visible && ContainsFocus && Conversation.IsAtLatest && peer.PeerId == _selectedId) { long read = entries.Where(x => x.Event.SenderDeviceId != _localId).Select(x => x.Event.CreatedUtc).DefaultIfEmpty(0).Max(); if (read > _readThrough.GetValueOrDefault(peer.PeerId)) { _readThrough[peer.PeerId] = read; _saveTimer.Stop(); _saveTimer.Start(); } }
             int unread = entries.Count(x => x.Event.SenderDeviceId != _localId && x.Event.CreatedUtc > _readThrough.GetValueOrDefault(peer.PeerId)); var latest = entries.OrderByDescending(x => x.Event.CreatedUtc).FirstOrDefault()?.Event; string draft = Conversation.DraftPreview(peer.PeerId); string preview = draft.Length > 0 ? "[草稿] " + draft : latest?.Text ?? latest?.Files.FirstOrDefault()?.Name ?? (peer.RecentlySeen ? "设备已连接" : "设备离线"); rows.Add((peer, preview.Replace('\r', ' ').Replace('\n', ' '), unread));
         }
-        string signature = Ui.CurrentTheme + ":" + _page + ":" + _selectedId + ":" + string.Join("|", rows.Select(x => x.Peer.PeerId + x.Peer.Name + x.Peer.RecentlySeen + x.Text + x.Unread)); if (signature == _signature) return; _signature = signature;
+        string signature = Ui.CurrentTheme + ":" + _page + ":" + _selectedId + ":" + string.Join("|", rows.Select(x => x.Peer.PeerId + x.Peer.Name + x.Peer.RecentlySeen + x.Peer.IsComputer + x.Text + x.Unread)); if (signature == _signature) return; _signature = signature;
         // Same devices in the same order: update rows in place instead of
         // recreating native controls, which made the sidebar flash on every switch.
         if (rows.Count == _deviceButtons.Count && rows.Select(x => x.Peer.PeerId).SequenceEqual(_deviceList.Controls.Cast<Control>().Select(c => c.Name.Substring("WorkspacePeer-".Length))))
         {
-            foreach (var item in rows) _deviceButtons[item.Peer.PeerId].SetState(item.Peer.Name, item.Text, item.Peer.RecentlySeen, item.Unread, _page == "chat" && _selectedId == item.Peer.PeerId);
+            foreach (var item in rows) _deviceButtons[item.Peer.PeerId].SetState(item.Peer.Name, item.Text, item.Peer.RecentlySeen, item.Unread, _page == "chat" && _selectedId == item.Peer.PeerId, item.Peer.IsComputer);
             return;
         }
-        _deviceList.SuspendLayout(); try { foreach (Control child in _deviceList.Controls.Cast<Control>().ToArray()) child.Dispose(); _deviceList.Controls.Clear(); _deviceButtons.Clear(); foreach (var item in rows) { var peer = item.Peer; var row = new WorkspaceDeviceRow(peer.Name, item.Text, peer.RecentlySeen, item.Unread, _page == "chat" && _selectedId == peer.PeerId) { Name = "WorkspacePeer-" + peer.PeerId, Width = Math.Max(150, _deviceList.ClientSize.Width - SystemInformation.VerticalScrollBarWidth - 2), Margin = new Padding(0, 0, 0, 5) }; row.Click += (_, _) => SelectConversation(peer.PeerId); _deviceButtons[peer.PeerId] = row; _deviceList.Controls.Add(row); } } finally { _deviceList.ResumeLayout(); }
+        _deviceList.SuspendLayout(); try { foreach (Control child in _deviceList.Controls.Cast<Control>().ToArray()) child.Dispose(); _deviceList.Controls.Clear(); _deviceButtons.Clear(); foreach (var item in rows) { var peer = item.Peer; var row = new WorkspaceDeviceRow(peer.Name, item.Text, peer.RecentlySeen, item.Unread, _page == "chat" && _selectedId == peer.PeerId, peer.IsComputer) { Name = "WorkspacePeer-" + peer.PeerId, Width = DeviceRowWidth(), Margin = new Padding(0, 0, 0, 2) }; row.Click += (_, _) => SelectConversation(peer.PeerId); _deviceButtons[peer.PeerId] = row; _deviceList.Controls.Add(row); } } finally { _deviceList.ResumeLayout(); }
     }
     public void SelectConversation(string id) { _selectedId = id; _page = "chat"; ShowContent(Conversation, () => Conversation.RefreshPeers(_getPeers(), id)); RefreshSidebar(); _saveTimer.Stop(); _saveTimer.Start(); }
     public void OpenConversation(string? id = null) { if (id != null || _selectedId != null) SelectConversation(id ?? _selectedId!); else ShowDevices(); ShowControlPanel(); }
@@ -153,12 +152,20 @@ internal sealed class WorkspaceForm : Form
         // Bringing the strip to the front made it overlap every page's footer.
         control.BringToFront();
         _status.SendToBack();
+        _status.BackColor = StatusBack(control);
         if (from == null) { _pageTransition.Finish(); return; }
         _content.PerformLayout();
         Bitmap? to = CaptureContent();
         if (to == null) _pageTransition.Finish();
         else _pageTransition.Play(to, _content);
     }
+
+    // The strip continues whatever sits above it: the white composer on the chat
+    // page, the plain canvas elsewhere.
+    private Color StatusBack(Control? page) => ReferenceEquals(page, Conversation) ? Ui.Surface : Ui.Canvas;
+
+    // Rows span the list; ClientSize already excludes a visible scrollbar.
+    private int DeviceRowWidth() => Math.Max(150, _deviceList.ClientSize.Width - 1);
 
     private bool CanAnimatePages() => IsHandleCreated && Visible && WindowState != FormWindowState.Minimized
         && _content.Width > 0 && _content.Height > 0 && VisualMotion.AnimationsEnabled;
@@ -227,7 +234,7 @@ internal sealed class WorkspaceForm : Form
         var section = new RoundedSurface
         {
             Name = name, Width = Math.Max(180, Math.Min(620, page.ClientSize.Width - page.Padding.Horizontal - 8)),
-            Height = height, CornerRadius = 14, FillColor = Ui.Surface, BorderColor = Ui.Line,
+            Height = height, CornerRadius = 10, FillColor = Ui.Surface, BorderColor = Ui.Line,
             Padding = new Padding(22, 20, 22, 20), Margin = new Padding(0, 0, 0, 16)
         };
         page.Controls.Add(section);
@@ -337,9 +344,9 @@ internal sealed class WorkspaceForm : Form
         section.Controls.Add(list);
     }
 
-    private void ShowPeerMenu() { var peer = SelectedPeer; if (peer == null) return; var menu = new RoundedContextMenuStrip(); menu.Items.Add(peer.Name).Enabled = false; menu.Items.Add("删除设备", null, (_, _) => { if (MessageBox.Show(this, "删除“" + peer.Name + "”并取消配对？\n已接收的本机文件会保留。", "删除设备", MessageBoxButtons.OKCancel, MessageBoxIcon.Question) != DialogResult.OK) return; Conversation.ForgetPeer(peer.PeerId); _revoke(peer.PeerId); _readThrough.Remove(peer.PeerId); RefreshWorkspace(); SaveState(); }); menu.Closed += (_, _) => menu.Dispose(); menu.Show(Cursor.Position); }
+    private void ShowPeerMenu() { var peer = SelectedPeer; if (peer == null) return; var menu = new RoundedContextMenuStrip(); menu.Items.Add(peer.Name).Enabled = false; menu.Items.Add("清空聊天记录", null, (_, _) => { if (Conversation.HistoryCount == 0) { AddEvent("没有可清空的记录"); return; } if (MessageBox.Show(this, "清空与“" + peer.Name + "”的全部聊天记录？\n\n本机已接收的文件会一并删除，你发送的原文件不会被删除。\n对方设备上的记录会同步移除。", "清空聊天记录", MessageBoxButtons.OKCancel, MessageBoxIcon.Warning, MessageBoxDefaultButton.Button2) != DialogResult.OK) return; Conversation.ClearHistory(); _signature = ""; RefreshSidebar(); }); menu.Items.Add("删除设备", null, (_, _) => { if (MessageBox.Show(this, "删除“" + peer.Name + "”并取消配对？\n已接收的本机文件会保留。", "删除设备", MessageBoxButtons.OKCancel, MessageBoxIcon.Question) != DialogResult.OK) return; Conversation.ForgetPeer(peer.PeerId); _revoke(peer.PeerId); _readThrough.Remove(peer.PeerId); RefreshWorkspace(); SaveState(); }); menu.Closed += (_, _) => menu.Dispose(); menu.Show(Cursor.Position); }
     private UiThemeMode _themeMode;
-    public void ApplyTheme(UiThemeMode mode) { _themeMode = mode; BackColor = Ui.Canvas; ForeColor = Ui.Ink; _sidebar.BackColor = Ui.Sidebar; _content.BackColor = Ui.Canvas; _status.BackColor = Ui.Sidebar; _status.ForeColor = Ui.Muted; _navSeparator.BackColor = Ui.Line; _actionsSeparator.BackColor = Ui.Line; void Colorize(Control control) { if (control is Label label) label.ForeColor = (string?)label.Tag switch { "section" => Ui.Faint, "muted" => Ui.Muted, _ => Ui.Ink }; foreach (Control child in control.Controls) Colorize(child); } Colorize(_sidebar); _folder.GlyphColor = Ui.Accent; _settings.GlyphColor = Ui.Muted; _folder.Invalidate(); _settings.Invalidate(); _update.Tone = _updateStatus == UpdateSidebarState.Failed ? ButtonTone.Danger : ButtonTone.Secondary; _update.Invalidate(); _availableUpdate.FillColor = Ui.AccentSoftSolid; _availableUpdate.BorderColor = Ui.Accent; _availableVersion.ForeColor = Ui.Accent; Conversation.ApplyTheme(); if (_devicesPage is DevicesView devices) devices.ApplyTheme(); if (_page == "settings") ShowSettings(); if (_page == "updates") ShowUpdates(); if (_page == "rollback") ShowRollbackHistory(); _signature = ""; RefreshSidebar(); Invalidate(true); }
+    public void ApplyTheme(UiThemeMode mode) { _themeMode = mode; BackColor = Ui.Canvas; ForeColor = Ui.Ink; _sidebar.BackColor = Ui.Sidebar; _content.BackColor = Ui.Canvas; _status.BackColor = StatusBack(_page == "chat" ? Conversation : null); _status.ForeColor = Ui.Faint; _navSeparator.BackColor = Ui.Line; _actionsSeparator.BackColor = Ui.Line; void Colorize(Control control) { if (control is Label label) label.ForeColor = (string?)label.Tag switch { "section" => Ui.Faint, "muted" => Ui.Muted, _ => Ui.Ink }; foreach (Control child in control.Controls) Colorize(child); } Colorize(_sidebar); _folder.GlyphColor = Ui.Accent; _settings.GlyphColor = Ui.Muted; _folder.Invalidate(); _settings.Invalidate(); _update.Tone = _updateStatus == UpdateSidebarState.Failed ? ButtonTone.Danger : ButtonTone.Secondary; _update.Invalidate(); _availableUpdate.FillColor = Ui.AccentSoftSolid; _availableUpdate.BorderColor = Ui.Accent; _availableVersion.ForeColor = Ui.Accent; Conversation.ApplyTheme(); if (_devicesPage is DevicesView devices) devices.ApplyTheme(); if (_page == "settings") ShowSettings(); if (_page == "updates") ShowUpdates(); if (_page == "rollback") ShowRollbackHistory(); _signature = ""; RefreshSidebar(); Invalidate(true); }
     public void ShowControlPanel() { Show(); if (WindowState == FormWindowState.Minimized) WindowState = FormWindowState.Normal; Activate(); }
     public void AddEvent(string text) { _status.Text = text; System.Diagnostics.Trace.WriteLine(text); }
     public void SetUpdateAvailable(string? version, Action? openUpdate)
@@ -400,15 +407,6 @@ internal sealed class WorkspaceForm : Form
         foreach (Control button in _content.Controls.Find("WorkspaceRollbackHistory", true)) button.Enabled = enabled;
     }
 
-    private void ApplyUpdatePillRegion()
-    {
-        if (_update.Width <= 0 || _update.Height <= 0) return;
-        using GraphicsPath path = new();
-        path.AddEllipse(0, 0, _update.Width - 1, _update.Height - 1);
-        Region? previous = _update.Region;
-        _update.Region = new Region(path);
-        previous?.Dispose();
-    }
     public void AllowExit() { _exit = true; }
     protected override void OnFormClosing(FormClosingEventArgs e) { if (e.CloseReason == CloseReason.UserClosing && !_exit) { e.Cancel = true; Hide(); SaveState(); HiddenToTray?.Invoke(); return; } base.OnFormClosing(e); }
     private sealed record SavedState(string? Selected, Dictionary<string, long> ReadThrough);
@@ -417,6 +415,8 @@ internal sealed class WorkspaceForm : Form
     protected override void Dispose(bool disposing) { if (disposing) { _saveTimer.Stop(); _saveTimer.Dispose(); SaveState(); } base.Dispose(disposing); }
 }
 
+// Flat conversation row: avatar tile, name, last message. Selection is a solid
+// fill across the row rather than an outlined card.
 internal sealed class WorkspaceDeviceRow : Control
 {
     private string _deviceName = "";
@@ -425,19 +425,20 @@ internal sealed class WorkspaceDeviceRow : Control
     private int _unread;
     private bool _selected;
     private bool _hovering;
+    private bool _computer;
 
-    internal WorkspaceDeviceRow(string deviceName, string preview, bool online, int unread, bool selected)
+    internal WorkspaceDeviceRow(string deviceName, string preview, bool online, int unread, bool selected, bool computer = false)
     {
-        Height = 68; MinimumSize = new Size(140, 68); Cursor = Cursors.Hand; TabStop = true;
+        Height = 62; MinimumSize = new Size(140, 62); Cursor = Cursors.Hand; TabStop = true;
         AccessibleRole = AccessibleRole.PushButton;
         SetStyle(ControlStyles.UserPaint | ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer | ControlStyles.ResizeRedraw, true);
-        SetState(deviceName, preview, online, unread, selected);
+        SetState(deviceName, preview, online, unread, selected, computer);
     }
 
-    internal void SetState(string deviceName, string preview, bool online, int unread, bool selected)
+    internal void SetState(string deviceName, string preview, bool online, int unread, bool selected, bool computer = false)
     {
-        if (_deviceName == deviceName && _preview == preview && _online == online && _unread == unread && _selected == selected) return;
-        _deviceName = deviceName; _preview = preview; _online = online; _unread = unread; _selected = selected;
+        if (_deviceName == deviceName && _preview == preview && _online == online && _unread == unread && _selected == selected && _computer == computer) return;
+        _deviceName = deviceName; _preview = preview; _online = online; _unread = unread; _selected = selected; _computer = computer;
         AccessibleName = deviceName + (online ? "，在线" : "，离线"); AccessibleDescription = preview;
         Invalidate();
     }
@@ -446,46 +447,41 @@ internal sealed class WorkspaceDeviceRow : Control
     {
         base.OnPaint(e);
         Graphics g = e.Graphics; g.SmoothingMode = SmoothingMode.AntiAlias;
-        RectangleF bounds = new(1, 1, Width - 3, Height - 7);
-        Color fill = _selected ? Ui.AccentSoftSolid : _hovering ? Ui.SurfaceHover : Ui.Surface;
-        for (int layer = 2; layer >= 1; layer--)
+        RectangleF bounds = new(0, 0, Width - 1, Height - 1);
+        Color rowFill = _selected ? Ui.SidebarSelected : _hovering ? Ui.SurfaceHover : Ui.Sidebar;
+        if (_selected || _hovering)
         {
-            using var shadow = new SolidBrush(Color.FromArgb((Ui.HeaderIsDark ? 30 : 13) / layer, 24, 40, 72));
-            RectangleF halo = RectangleF.Inflate(bounds, layer - 1, layer - 1);
-            halo.Offset(0f, layer * 1.1f);
-            VisualDrawing.FillRoundedRectangle(g, shadow, halo, 9 + layer - 1);
+            using var brush = new SolidBrush(rowFill);
+            VisualDrawing.FillRoundedRectangle(g, brush, bounds, 8);
         }
-        using (var brush = new SolidBrush(fill)) VisualDrawing.FillRoundedRectangle(g, brush, bounds, 9);
-        using (var pen = new Pen(_selected ? Ui.Accent : Ui.Line, _selected ? 1.4f : 1f)) VisualDrawing.DrawRoundedRectangle(g, pen, bounds, 9);
-        if (_selected)
-        {
-            using var marker = new SolidBrush(Ui.Accent);
-            VisualDrawing.FillRoundedRectangle(g, marker, new RectangleF(bounds.X, bounds.Y + 14, 3, bounds.Height - 28), 2);
-        }
-        Color onlineColor = _online ? Ui.Success : Ui.Faint;
-        float dotY = bounds.Y + 15;
-        using (var halo = new SolidBrush(Color.FromArgb(_online ? 46 : 28, onlineColor))) g.FillEllipse(halo, Width - 27, dotY - 3, 12, 12);
-        using (var dot = new SolidBrush(onlineColor)) g.FillEllipse(dot, Width - 24, dotY, 6, 6);
+        const int avatar = 40;
+        RectangleF tile = new(10, (Height - avatar) / 2f, avatar, avatar);
+        VisualDrawing.DrawDeviceAvatar(g, tile, !_computer, Ui.PrimarySurface, Ui.PrimaryInk);
+        // Presence badge on the avatar corner, ringed in the row colour.
+        RectangleF presence = new(tile.Right - 9, tile.Bottom - 9, 12, 12);
+        using (var ring = new SolidBrush(rowFill)) g.FillEllipse(ring, presence);
+        using (var dot = new SolidBrush(_online ? Ui.Success : Ui.Faint)) g.FillEllipse(dot, RectangleF.Inflate(presence, -2, -2));
         int badgeWidth = 0;
         if (_unread > 0)
         {
             string count = _unread > 99 ? "99+" : _unread.ToString();
-            using var badgeFont = Ui.Font(8f, FontStyle.Bold);
-            badgeWidth = Math.Max(20, TextRenderer.MeasureText(g, count, badgeFont, Size.Empty, TextFormatFlags.SingleLine | TextFormatFlags.NoPadding).Width + 12);
-            RectangleF badge = new(Width - 16 - badgeWidth, bounds.Y + 34, badgeWidth, 18);
-            using (var badgeFill = new SolidBrush(Ui.Accent)) VisualDrawing.FillRoundedRectangle(g, badgeFill, badge, 9);
-            TextRenderer.DrawText(g, count, badgeFont, Rectangle.Round(badge), Ui.PrimaryInk, TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.SingleLine | TextFormatFlags.NoPadding);
+            using var badgeFont = Ui.Font(7.8f, FontStyle.Bold);
+            badgeWidth = Math.Max(18, TextRenderer.MeasureText(g, count, badgeFont, Size.Empty, TextFormatFlags.SingleLine | TextFormatFlags.NoPadding).Width + 10);
+            RectangleF badge = new(Width - 10 - badgeWidth, 34, badgeWidth, 18);
+            using (var badgeFill = new SolidBrush(Ui.Danger)) VisualDrawing.FillRoundedRectangle(g, badgeFill, badge, 9);
+            TextRenderer.DrawText(g, count, badgeFont, Rectangle.Round(badge), Color.White, TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.SingleLine | TextFormatFlags.NoPadding);
         }
-        using var titleFont = Ui.Font(9.5f, FontStyle.Bold);
-        using var previewFont = Ui.Font(8.2f);
-        int titleWidth = Math.Max(36, Width - 48);
-        int previewWidth = Math.Max(36, Width - 30 - (badgeWidth > 0 ? badgeWidth + 8 : 0));
-        TextRenderer.DrawText(g, _deviceName, titleFont, new Rectangle(14, 8, titleWidth, 23), _selected ? Ui.AccentDark : Ui.Ink, TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.SingleLine | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPadding);
-        TextRenderer.DrawText(g, _preview, previewFont, new Rectangle(14, 34, previewWidth, 20), Ui.Muted, TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.SingleLine | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPadding);
+        using var titleFont = Ui.Font(9.75f, FontStyle.Bold);
+        using var previewFont = Ui.Font(8.4f);
+        const int textLeft = 60;
+        int titleWidth = Math.Max(36, Width - textLeft - 10);
+        int previewWidth = Math.Max(36, Width - textLeft - 10 - (badgeWidth > 0 ? badgeWidth + 6 : 0));
+        TextRenderer.DrawText(g, _deviceName, titleFont, new Rectangle(textLeft, 10, titleWidth, 22), Ui.Ink, TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.SingleLine | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPadding);
+        TextRenderer.DrawText(g, _preview, previewFont, new Rectangle(textLeft, 33, previewWidth, 20), Ui.Muted, TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.SingleLine | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPadding);
         if (Focused && ShowFocusCues)
         {
             using var focus = new Pen(Ui.Accent, 1) { DashStyle = DashStyle.Dot };
-            VisualDrawing.DrawRoundedRectangle(g, focus, RectangleF.Inflate(bounds, -3, -3), 7);
+            VisualDrawing.DrawRoundedRectangle(g, focus, RectangleF.Inflate(bounds, -2, -2), 7);
         }
     }
 

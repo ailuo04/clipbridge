@@ -22,7 +22,7 @@ internal sealed class SidebarSurface : Panel
 	}
 }
 
-// Conversation title bar. A raised surface with a bottom rule separates the
+// Conversation title bar. A flat white band with a bottom rule separates the
 // peer identity from the scrolling message well below it.
 internal sealed class ConversationHeaderSurface : Panel
 {
@@ -42,22 +42,13 @@ internal sealed class ConversationHeaderSurface : Panel
 }
 
 // Bottom status strip. Stays a Label so the workspace can still find it as the
-// single status child of the content area, but paints its own chrome.
+// single status child of the content area. It takes the tone of the page above
+// it, so it reads as that page's footer instead of a separate band.
 internal sealed class StatusStripLabel : Label
 {
 	public StatusStripLabel()
 	{
 		SetStyle(ControlStyles.ResizeRedraw, true);
-		BackColor = Ui.Sidebar;
-	}
-
-	protected override void OnPaint(PaintEventArgs e)
-	{
-		if (Width > 0 && Height > 0)
-		{
-			using var edge = new Pen(Ui.Line);
-			e.Graphics.DrawLine(edge, 0, 0, Width, 0);
-		}
-		base.OnPaint(e);
+		BackColor = Ui.Surface;
 	}
 }

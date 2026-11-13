@@ -70,7 +70,7 @@ class MainActivity : Activity() {
     private var renderGeneration=0
     private var pendingScrollRestore=false
     private val pageOffsets=IntArray(4)
-    private data class Target(val id: String,val name: String,val address: String,val online: Boolean)
+    private data class Target(val id: String,val name: String,val address: String,val online: Boolean,val platform: String = "") { val isComputer get()=UiPresentation.isComputer(platform) }
     private val tick=object : Runnable { override fun run() { refresh(); handler.postDelayed(this,1000) } }
     override fun attachBaseContext(base: Context) {
         val mode=base.getSharedPreferences("interface",Context.MODE_PRIVATE).getInt("theme",0)
@@ -154,7 +154,7 @@ class MainActivity : Activity() {
     }
     private fun targets(): List<Target> {
         val service=BridgeService.current; val hub=service?.hub
-        val current=store.records().map { t -> val p=hub?.nearby?.get(t.id)?.takeIf { it.authenticated && System.currentTimeMillis()-it.seen<=15000 }; Target(t.id,t.name,p?.address ?: t.address,p!=null && t.active) }.toMutableList()
+        val current=store.records().map { t -> val p=hub?.nearby?.get(t.id)?.takeIf { it.authenticated && System.currentTimeMillis()-it.seen<=15000 }; Target(t.id,t.name,p?.address ?: t.address,p!=null && t.active,t.platform) }.toMutableList()
         service?.peers?.values?.filter { System.currentTimeMillis()-it.lastSeen<=15000 && current.none { t->t.address==it.address } }?.forEach { current.add(Target("legacy:"+it.address,it.name,it.address,true)) }
         if(selected.startsWith("manual:") && store.load()!=null) { val host=selected.removePrefix("manual:"); if(BridgeProtocol.isLocal(host) && current.none { it.address==host }) current.add(Target(selected,"手动连接的旧版设备",host,true)) }
         return current.sortedByDescending { it.online }
@@ -245,14 +245,45 @@ class MainActivity : Activity() {
             val draft=drafts[device.id].orEmpty();val attachments=attachmentDrafts[device.id].orEmpty()
             val subtitle=when { conversations.isSending(device.id)->"正在发送…";draft.isNotBlank()->"[草稿] "+draft;attachments.isNotEmpty()->"[草稿] ${attachments.size} 个附件";last?.text!=null->last.text;last?.files?.isNotEmpty()==true->(if(last.files.first().isDirectory) "[文件夹] " else "[文件] ")+last.files.first().name;else->"点击开始对话" }
             val row=ui.row().apply { setPadding(ui.dp(14),ui.dp(16),ui.dp(14),ui.dp(16));background=ui.ripple(ui.background(ui.surface,16));isFocusable=true;contentDescription=device.name+"，"+(if(device.online)"在线" else "离线")+"，"+subtitle;setOnClickListener { openConversation(device.id) };setOnLongClickListener { deviceMenu(device);true } }
-            row.addView(ui.iconTile(0),LinearLayout.LayoutParams(ui.dp(44),ui.dp(44)).apply { marginEnd=ui.dp(12) })
+            row.addView(ui.iconTile(if(device.isComputer) 0 else 8),LinearLayout.LayoutParams(ui.dp(44),ui.dp(44)).apply { marginEnd=ui.dp(12) })
             val labels=ui.column();labels.addView(ui.text(device.name,16f,bold=true));labels.addView(ui.text(subtitle.orEmpty().replace('\n',' '),12f,ui.muted).apply { maxLines=1;ellipsize=android.text.TextUtils.TruncateAt.END });row.addView(labels,LinearLayout.LayoutParams(0,-2,1f))
             val status=ui.column();status.addView(ui.text(if(device.online)"在线" else "离线",11f,if(device.online)ui.green else ui.muted));if(unread>0)status.addView(ui.badge(unread.toString(),ui.primary));row.addView(status)
             body.addView(row,LinearLayout.LayoutParams(-1,-2).apply { bottomMargin=ui.dp(8) })
         }
     }
     private fun deviceMenu(device:Target) {
-        ui.dialog().setTitle(device.name).setItems(arrayOf("打开对话","删除设备")) { _,which->if(which==0)openConversation(device.id) else deleteDevice(device) }.setNegativeButton("关闭",null).show()
+        ui.dialog().setTitle(device.name).setItems(arrayOf("打开对话","清空聊天记录","删除设备")) { _,which->when(which){0->openConversation(device.id);1->clearHistory(device);else->deleteDevice(device)} }.setNegativeButton("关闭",null).show()
+    }
+    /** Files ClipBridge saved for an entry: received copies only, never an original the user picked to send. */
+    private fun ownedFiles(entry: app.clipbridge.history.HistoryLocalRecord): List<Uri> {
+        val outgoing=entry.event.senderDeviceId==BridgeService.current?.localDeviceId()
+        return entry.localFileReferences.values.map(Uri::parse).filter { UiPresentation.ownsLocalFile(outgoing,it.authority) }
+    }
+    /** Removes the entry and the received files behind it. Returns how many files could not be removed. */
+    private fun deleteHistoryEntry(entry: app.clipbridge.history.HistoryLocalRecord): Int {
+        val owned=ownedFiles(entry)
+        requireService().deleteHistory(entry.event.peerId,entry.event.eventId)
+        // A folder transfer lists the folder and its children; removing the folder covers them.
+        return owned.count { uri -> runCatching {
+            if(uri.authority==app.clipbridge.storage.ReceivedFileProvider.AUTHORITY) { val file=app.clipbridge.storage.ReceivedFileProvider.resolve(this,uri); !file.exists() || file.deleteRecursively() }
+            else { contentResolver.delete(uri,null,null); true }
+        }.getOrDefault(false).not() }
+    }
+    private fun confirmDeleteHistory(entry: app.clipbridge.history.HistoryLocalRecord) {
+        val owned=ownedFiles(entry)
+        val keepsOriginal=entry.localFileReferences.isNotEmpty() && owned.isEmpty()
+        val detail=(if(owned.isEmpty()) "删除这条记录。" else "删除这条记录，并删除本机保存的文件。")+(if(keepsOriginal) "你发送的原文件不会被删除。" else "")+"对方设备上的这条记录会同步移除。"
+        ui.dialog().setTitle("删除？").setMessage(detail).setNegativeButton("取消",null).setPositiveButton("删除") { _,_->safe {
+            val failed=deleteHistoryEntry(entry); message(if(failed>0) "记录已删除，$failed 个文件未能删除" else "已删除"); signature=""; render()
+        } }.show()
+    }
+    private fun clearHistory(device:Target) {
+        val entries=runCatching { requireService().recentHistory(device.id) }.getOrDefault(emptyList())
+        if(entries.isEmpty()) { message("没有可清空的记录"); return }
+        ui.dialog().setTitle("清空与“${device.name}”的聊天记录？").setMessage("本机已接收的文件会一并删除，你发送的原文件不会被删除。对方设备上的记录会同步移除。")
+            .setNegativeButton("取消",null).setPositiveButton("清空") { _,_->safe {
+                val failed=entries.sumOf { deleteHistoryEntry(it) }; message(if(failed>0) "聊天记录已清空，$failed 个文件未能删除" else "聊天记录已清空"); signature=""; render()
+            } }.show()
     }
     private fun deleteDevice(device:Target) {
         ui.dialog().setTitle("删除“${device.name}”？").setMessage("从设备列表移除并取消配对。已接收的本机文件会保留。")
@@ -302,7 +333,7 @@ class MainActivity : Activity() {
             { value -> safe { clipboardManager.setPrimaryClip(ClipData.newPlainText("ClipBridge",value)); message("已复制") } },
             { uri -> safe { openReceived(uri) } },
             { entry -> safe { shareHistory(entry) } },
-            { entry -> safe { service?.deleteHistory(entry.event.peerId,entry.event.eventId); signature=""; render() } })
+            { entry -> safe { confirmDeleteHistory(entry) } },{ current.isComputer })
         timeline.adapter=adapter; adapter.submit(rows); chatList=timeline
         conversationHost.addView(timeline,LinearLayout.LayoutParams(-1,0,1f))
         timeline.setOnScrollListener(object:AbsListView.OnScrollListener { override fun onScrollStateChanged(view:AbsListView?,state:Int) { saveChatPosition() };override fun onScroll(view:AbsListView?,firstVisibleItem:Int,visibleItemCount:Int,totalItemCount:Int) {} })

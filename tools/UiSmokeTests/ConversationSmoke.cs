@@ -59,10 +59,34 @@ internal static class ConversationSmoke
         string[] textActions = ((System.Collections.Generic.IReadOnlyList<string>)Call("Actions", "text", false)!).ToArray();
         string[] fileActions = ((System.Collections.Generic.IReadOnlyList<string>)Call("Actions", "file", true)!).ToArray();
         string[] fileWithoutPathActions = ((System.Collections.Generic.IReadOnlyList<string>)Call("Actions", "file", false)!).ToArray();
-        Check(textActions.SequenceEqual(new[] { "复制", "删除记录" }), "text actions copy and delete only the record");
-        Check(fileActions.SequenceEqual(new[] { "打开本地文件", "删除记录" }), "file actions open local file and delete only the record");
-        Check(fileWithoutPathActions.SequenceEqual(new[] { "删除记录" }), "file without a local path cannot offer open");
-        Check(!textActions.Concat(fileActions).Any(action => action.Contains("删除文件", StringComparison.Ordinal)), "history row actions never delete local files");
+        Check(textActions.SequenceEqual(new[] { "复制", "删除" }), "text actions are copy and delete");
+        Check(fileActions.SequenceEqual(new[] { "打开本地文件", "删除" }), "file actions are open and delete");
+        Check(fileWithoutPathActions.SequenceEqual(new[] { "删除" }), "file without a local path cannot offer open");
+        // Deleting an entry removes the copy ClipBridge saved, and nothing else:
+        // a file the user picked to send lives outside the app's folders.
+        Type localFiles = app.GetType("ClipBridge.Windows.LocalFiles") ?? throw new Exception("Missing LocalFiles");
+        FieldInfo receiveRoot = localFiles.GetField("ReceiveDirectory", BindingFlags.Static | BindingFlags.NonPublic)!;
+        object originalRoot = receiveRoot.GetValue(null)!;
+        string ownedRoot = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "clipbridge-owned-" + Guid.NewGuid().ToString("N"));
+        string outsideRoot = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "clipbridge-outside-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            System.IO.Directory.CreateDirectory(System.IO.Path.Combine(ownedRoot, "folder")); System.IO.Directory.CreateDirectory(outsideRoot);
+            string received = System.IO.Path.Combine(ownedRoot, "received.txt"), receivedFolder = System.IO.Path.Combine(ownedRoot, "folder"), original = System.IO.Path.Combine(outsideRoot, "original.txt");
+            System.IO.File.WriteAllText(received, "x"); System.IO.File.WriteAllText(System.IO.Path.Combine(receivedFolder, "child.txt"), "x"); System.IO.File.WriteAllText(original, "keep");
+            receiveRoot.SetValue(null, ownedRoot);
+            bool Owned(string path) => (bool)localFiles.GetMethod("IsAppOwned")!.Invoke(null, new object[] { path })!;
+            Check(Owned(received) && Owned(receivedFolder) && !Owned(original) && !Owned(ownedRoot) && !Owned(System.IO.Path.Combine(ownedRoot, "..", "elsewhere.txt")), "only files inside the receive folder count as ClipBridge's own");
+            string[] failed = (string[])localFiles.GetMethod("Delete")!.Invoke(null, new object[] { new[] { received, receivedFolder, original } })!;
+            Check(failed.Length == 0 && !System.IO.File.Exists(received) && !System.IO.Directory.Exists(receivedFolder), "deleting an entry removes the received file and folder");
+            Check(System.IO.File.Exists(original) && System.IO.Directory.Exists(ownedRoot), "a sent original and the receive folder itself are never deleted");
+        }
+        finally
+        {
+            receiveRoot.SetValue(null, originalRoot);
+            if (System.IO.Directory.Exists(ownedRoot)) System.IO.Directory.Delete(ownedRoot, true);
+            if (System.IO.Directory.Exists(outsideRoot)) System.IO.Directory.Delete(outsideRoot, true);
+        }
 
         long now = 1_800_000_000_000;
         long day = 24L * 60 * 60 * 1000;
@@ -189,7 +213,9 @@ internal static class ConversationSmoke
             }
             bubble.ContextMenuStrip.Close();
             bool outgoing = (bool)Field(row, "_outgoing")!;
-            Check(outgoing ? Math.Abs(bubble.Right - ((Control)row).ClientSize.Width) <= 2 : bubble.Left == 0, outgoing ? "sent bubble is placed on the right" : "received bubble is placed on the left");
+            // Each bubble sits beside its sender's avatar, so it starts one avatar gutter in from its edge.
+            int gutter = outgoing ? ((Control)row).ClientSize.Width - bubble.Right : bubble.Left;
+            Check(gutter >= 36 && gutter <= 52, outgoing ? "sent bubble is placed on the right, beside this computer's avatar" : "received bubble is placed on the left, beside the peer's avatar");
         }
         Array many=Array.CreateInstance(recordType,24);
         for(int i=0;i<24;i++) {
@@ -297,13 +323,12 @@ internal static class ConversationSmoke
             var workspaceView=workspaceType.GetProperty("Conversation")!.GetValue(workspace)!;
             var editor=(TextBox)workspace.Controls.Find("ConversationComposer",true).Single();
             editor.Focus(); Application.DoEvents();
-            Check(GetCaretPos(out var caret),"composer exposes a focused insertion caret for vertical alignment");
-            int caretCenterY=editor.PointToScreen(caret).Y+editor.Font.Height/2;
-            int fieldCenterY=editor.Parent!.PointToScreen(System.Drawing.Point.Empty).Y+editor.Parent.Height/2;
-            Check(Math.Abs(caretCenterY-fieldCenterY)<=3,"input caret sits at the center of its rounded field");
-            Check(editor.Parent!.Padding.Top>editor.Parent.Padding.Bottom,"composer text baseline is shifted down to the field's visual center");
-            var fieldSurface=(System.Drawing.Color)app.GetType("ClipBridge.Windows.Ui")!.GetField("FieldSurface",BindingFlags.Static|BindingFlags.NonPublic)!.GetValue(null)!;
-            Check(editor.BackColor.ToArgb()==fieldSurface.ToArgb(),"composer editor is visually inset from the file toolbar");
+            Check(GetCaretPos(out var caret),"composer exposes a focused insertion caret");
+            // The composer is a flat, borderless multi-line area: typing starts
+            // on the first line under the toolbar, not centred in a pill.
+            Check(caret.Y<editor.Font.Height && editor.Height>=editor.Font.Height*3,"input caret starts on the first line of a multi-line editing area");
+            var inputFill=(System.Drawing.Color)app.GetType("ClipBridge.Windows.Ui")!.GetField("FieldSurface",BindingFlags.Static|BindingFlags.NonPublic)!.GetValue(null)!;
+            Check(editor.BackColor.ToArgb()==inputFill.ToArgb() && editor.BorderStyle==BorderStyle.None,"composer editor sits in its own outlined field, distinct from the white input band");
             bool HasText(Control control,string text)=>control.Text==text||control.Controls.Cast<Control>().Any(child=>HasText(child,text));
             Check(!HasText(workspace,"Enter 发送 · Shift + Enter 换行 · 原文件") && !workspace.Controls.Find("ConversationFooter",true).Any(),"composer and conversation footer omit redundant helper copy");
             var inputSurface=workspace.Controls.Find("ConversationInputSurface",true).Single();

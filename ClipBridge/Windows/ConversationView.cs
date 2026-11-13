@@ -80,7 +80,7 @@ internal sealed class ConversationView : UserControl
         FlatStyle = FlatStyle.Flat,
         Margin = new Padding(4, 0, 0, 0)
     };
-    private readonly ConversationTimelineControl _timeline = new() { Name = "ConversationTimeline", Dock = DockStyle.Fill, Padding = new Padding(22, 12, 22, 4) };
+    private readonly ConversationTimelineControl _timeline = new() { Name = "ConversationTimeline", Dock = DockStyle.Fill, Padding = new Padding(16, 6, 12, 2) };
     private readonly MessageComposer _composer = new()
     {
         Name = "ConversationComposer",
@@ -97,8 +97,8 @@ internal sealed class ConversationView : UserControl
     {
         Name = "ConversationEditorField",
         Dock = DockStyle.Fill,
-        Padding = new Padding(10, 11, 10, 3),
-        Margin = new Padding(0, 2, 0, 2)
+        Padding = new Padding(11, 9, 9, 5),
+        Margin = new Padding(0, 0, 0, 5)
     };
     private readonly ModernButton _send = new("", ButtonTone.Primary)
     {
@@ -106,19 +106,19 @@ internal sealed class ConversationView : UserControl
         Text = "发送",
         Glyph = "\uE724",
         AutoSize = false,
-        Size = new Size(96, 38),
+        Size = new Size(88, 32),
         FlatStyle = FlatStyle.Flat,
         Margin = new Padding(4, 0, 0, 0)
     };
-    private readonly ModernButton _attach = new("", ButtonTone.Secondary)
+    private readonly ModernButton _attach = new("", ButtonTone.Ghost)
     {
         Name = "ConversationAttachButton",
         Text = "文件",
         Glyph = "\uE8A5",
         AutoSize = false,
-        Size = new Size(82, 36),
+        Size = new Size(74, 30),
         FlatStyle = FlatStyle.Flat,
-        Margin = new Padding(4, 0, 0, 0)
+        Margin = new Padding(0, 2, 0, 0)
     };
     private readonly Panel _dropZone = new()
     {
@@ -147,10 +147,10 @@ internal sealed class ConversationView : UserControl
     public bool IsAtLatest => _timeline.IsAtLatest;
     public bool HasActiveSends => _sending.Count > 0;
     public event Action? StateChanged;
-    private readonly Label _peerTitle = new() { AutoSize = true, Anchor = AnchorStyles.Left, Font = Ui.Font(13f, FontStyle.Bold), TextAlign = ContentAlignment.MiddleLeft, Margin = Padding.Empty };
+    private readonly Label _peerTitle = new() { AutoSize = true, Anchor = AnchorStyles.Left, Font = Ui.Font(12f, FontStyle.Bold), TextAlign = ContentAlignment.MiddleLeft, Margin = Padding.Empty };
     private readonly ConnectionPill _connection = new() { Name = "ConversationConnectionPill", Anchor = AnchorStyles.Left, Margin = new Padding(12, 0, 0, 0) };
-    private readonly ConversationHeaderSurface _header = new() { Name = "ConversationHeader", Dock = DockStyle.Fill, Padding = new Padding(24, 10, 18, 10), Margin = Padding.Empty };
-    public void SetEmbedded() { _peers.Parent!.Controls.Remove(_peers); ((TableLayoutPanel)_status.Parent!).Controls.Add(_peerTitle, 0, 0); _manage.Text = ""; _manage.Glyph = "\uE712"; _manage.AutoSize = false; _manage.MinimumSize = new Size(36, 36); _manage.Size = new Size(36, 36); _manage.Tone = ButtonTone.Ghost; _manage.AccessibleName = "设备选项"; _manage.AccessibleDescription = "管理当前设备"; _openDirectory.Visible = false; }
+    private readonly ConversationHeaderSurface _header = new() { Name = "ConversationHeader", Dock = DockStyle.Fill, Padding = new Padding(20, 9, 12, 7), Margin = Padding.Empty };
+    public void SetEmbedded() { _peers.Parent!.Controls.Remove(_peers); ((TableLayoutPanel)_status.Parent!).Controls.Add(_peerTitle, 0, 0); _manage.Text = ""; _manage.Glyph = "\uE712"; _manage.AutoSize = false; _manage.MinimumSize = new Size(36, 36); _manage.Size = new Size(36, 36); _manage.Tone = ButtonTone.Ghost; _manage.Margin = new Padding(4, 6, 0, 0); _manage.AccessibleName = "设备选项"; _manage.AccessibleDescription = "管理当前设备"; _openDirectory.Visible = false; }
     public void ForgetPeer(string id) { if (_sendCancellation.TryGetValue(id, out var cancel)) cancel.Cancel(); _drafts.Remove(id); if (_draftPeer == id) { _draftPeer = null; _attachments = new(); _composer.Clear(); _selected = null; RenderAttachments(); } }
     private bool _resourcesDisposed;
     private TransferProgress[] _transfers = Array.Empty<TransferProgress>();
@@ -197,9 +197,9 @@ internal sealed class ConversationView : UserControl
             RowCount = 3,
             BackColor = Ui.Canvas
         };
-        _root.RowStyles.Add(new RowStyle(SizeType.Absolute, 78));
+        _root.RowStyles.Add(new RowStyle(SizeType.Absolute, 64));
         _root.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
-        _root.RowStyles.Add(new RowStyle(SizeType.Absolute, 182));
+        _root.RowStyles.Add(new RowStyle(SizeType.Absolute, 172));
         Controls.Add(_root);
 
         _root.Controls.Add(BuildHeader(), 0, 0);
@@ -217,7 +217,9 @@ internal sealed class ConversationView : UserControl
         _manage.Click += (_, _) => _manageDevices();
         _composer.KeyDown += ComposerKeyDown;
         _composer.TextChanged += (_, _) => StateChanged?.Invoke();
-        _timeline.DeleteRequested += DeleteRecord;
+        _timeline.DeleteRequested += RequestDelete;
+        _composer.Enter += (_, _) => _composerField.Highlighted = true;
+        _composer.Leave += (_, _) => _composerField.Highlighted = false;
         _timeline.CopyRequested += CopyRecord;
         _timeline.OpenRequested += OpenRecord;
         WireDrop(this);
@@ -310,22 +312,22 @@ internal sealed class ConversationView : UserControl
         header.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
         header.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         header.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
-        header.RowStyles.Add(new RowStyle(SizeType.Absolute, 38)); header.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        header.RowStyles.Add(new RowStyle(SizeType.Absolute, 28)); header.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
         _peers.Font = Ui.Font(12f, FontStyle.Bold); _peers.FlatStyle = FlatStyle.Flat; _peers.MinimumSize = new Size(240, 34); _peers.Anchor = AnchorStyles.Left;
         header.Controls.Add(_peers, 0, 0);
         header.Controls.Add(_connection, 1, 0);
         var actions = new FlowLayoutPanel { AutoSize = true, Dock = DockStyle.Fill, WrapContents = false, BackColor = Color.Transparent, Margin = Padding.Empty };
-        actions.Controls.Add(_openDirectory); actions.Controls.Add(_manage); header.Controls.Add(actions, 2, 0);
-        _status.Text = "已配对设备直接接收"; _status.Font = Ui.Font(8.5f); header.Controls.Add(_status, 0, 1); header.SetColumnSpan(_status, 3);
+        actions.Controls.Add(_openDirectory); actions.Controls.Add(_manage); header.Controls.Add(actions, 2, 0); header.SetRowSpan(actions, 2);
+        _status.Text = "已配对设备直接接收"; _status.Font = Ui.Font(8.5f); header.Controls.Add(_status, 0, 1); header.SetColumnSpan(_status, 2);
         _header.Controls.Add(header);
         return _header;
     }
     private TableLayoutPanel BuildComposer()
     {
-        var shell = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 1, Margin = new Padding(22, 6, 22, 16) };
-        var surface = new RoundedSurface { Name = "ConversationInputSurface", Dock = DockStyle.Fill, CornerRadius = 14, Padding = new Padding(16), FillColor = Ui.Surface, BorderColor = Ui.Line };
+        var shell = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 1, Margin = Padding.Empty };
+        var surface = new RoundedSurface { Name = "ConversationInputSurface", Dock = DockStyle.Fill, Flat = true, CornerRadius = 0, Padding = new Padding(14, 7, 14, 6), Margin = Padding.Empty, FillColor = Ui.Surface, BorderColor = Ui.Line };
         var layout = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 4, BackColor = Color.Transparent };
-        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 38)); layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 0)); layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100)); layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 38));
+        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 34)); layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 0)); layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100)); layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 36));
         _composerTools.Controls.Add(_attach);
         layout.Controls.Add(_composerTools, 0, 0); layout.Controls.Add(_attachmentStrip, 0, 1);
         _composerField.Controls.Add(_composer);
@@ -383,6 +385,7 @@ internal sealed class ConversationView : UserControl
         try
         {
             _timeline.SelectPartition(_selected.Snapshot.PeerId);
+            _timeline.PeerIsComputer = _selected.Snapshot.IsComputer;
             var history = _history.GetRecent(_selected.Snapshot.PeerId, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
             var active = _transfers.Where(p => p.PeerId == _selected.Snapshot.PeerId && !history.Any(h => h.Event.EventId == p.TransferId) && p.State is "排队中" or "准备文件" or "连接接收设备" or "传输中")
                 .Select(p => new HistoryLocalRecord(new HistorySyncEvent(1, p.TransferId, p.PeerId!, p.Direction == "发送" ? _localDeviceId : p.PeerId!, p.CreatedUtc, "file", null,
@@ -478,7 +481,7 @@ internal sealed class ConversationView : UserControl
             tile.Controls.Add(remove); _attachmentStrip.Controls.Add(tile);
         }
         if (_attachmentStrip.Parent is TableLayoutPanel layout) layout.RowStyles[1].Height = _attachments.Count > 0 ? 80 : 0;
-        _root.RowStyles[2].Height = _attachments.Count > 0 ? 262 : 182;
+        _root.RowStyles[2].Height = _attachments.Count > 0 ? 252 : 172;
     }
 
     private void ComposerKeyDown(object? sender, KeyEventArgs e)
@@ -532,16 +535,53 @@ internal sealed class ConversationView : UserControl
         };
     }
 
+    // Ask first: deleting also removes the copy ClipBridge saved on this PC.
+    private void RequestDelete(HistoryLocalRecord entry)
+    {
+        string[] owned = LocalFiles.OwnedExisting(entry.LocalFileReferences.Values);
+        bool keepsOriginal = entry.LocalFileReferences.Values.Any(path => !LocalFiles.IsAppOwned(path));
+        string message = owned.Length == 0 ? "删除这条记录？"
+            : "删除这条记录，并删除本机保存的文件？\n\n" + string.Join("\n", owned.Take(4).Select(Path.GetFileName)) + (owned.Length > 4 ? "\n等 " + owned.Length + " 项" : "");
+        if (keepsOriginal) message += "\n\n你发送的原文件不会被删除。";
+        message += "\n\n对方设备上的这条记录会同步移除。";
+        if (MessageBox.Show(FindForm(), message, "删除", MessageBoxButtons.OKCancel, MessageBoxIcon.Warning, MessageBoxDefaultButton.Button2) != DialogResult.OK) return;
+        DeleteRecord(entry);
+    }
+
     private void DeleteRecord(HistoryLocalRecord entry)
     {
         if (_history is null) return;
         try
         {
-            _history.DeleteRecord(entry.Event.PeerId, entry.Event.EventId, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
-            _status.Text = "已删除历史记录，本地文件保留";
+            int failed = DeleteEntry(entry);
+            _status.Text = failed > 0 ? "记录已删除，" + failed + " 个文件正在使用，未能删除" : "已删除";
             RefreshSelectedHistory();
         }
         catch (Exception error) { _status.Text = "删除记录失败：" + error.Message; }
+    }
+
+    // Removes the record, the files ClipBridge saved for it, and its thumbnail.
+    private int DeleteEntry(HistoryLocalRecord entry)
+    {
+        _history!.DeleteRecord(entry.Event.PeerId, entry.Event.EventId, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
+        foreach (var file in entry.Event.Files) MediaPreview.Forget(file.Sha256);
+        return LocalFiles.Delete(LocalFiles.OwnedExisting(entry.LocalFileReferences.Values)).Length;
+    }
+
+    public int HistoryCount => _selected is null || _history is null || string.IsNullOrWhiteSpace(_selected.Snapshot.PeerId) ? 0
+        : _history.GetRecent(_selected.Snapshot.PeerId, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()).Count;
+
+    public void ClearHistory()
+    {
+        if (_selected is null || _history is null || string.IsNullOrWhiteSpace(_selected.Snapshot.PeerId)) return;
+        try
+        {
+            int failed = 0;
+            foreach (var entry in _history.GetRecent(_selected.Snapshot.PeerId, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds())) failed += DeleteEntry(entry);
+            _status.Text = failed > 0 ? "聊天记录已清空，" + failed + " 个文件正在使用，未能删除" : "聊天记录已清空";
+            RefreshSelectedHistory(); StateChanged?.Invoke();
+        }
+        catch (Exception error) { _status.Text = "清空记录失败：" + error.Message; }
     }
 
     private void CopyRecord(HistoryLocalRecord entry)

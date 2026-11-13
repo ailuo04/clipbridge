@@ -13,6 +13,27 @@ internal static class MediaPreview
     private static readonly object Gate = new();
     public static bool IsImage(string path) => Path.GetExtension(path).ToLowerInvariant() is ".png" or ".jpg" or ".jpeg" or ".gif" or ".bmp" or ".webp";
     public static bool IsVideo(string path) => Path.GetExtension(path).ToLowerInvariant() is ".mp4" or ".mov" or ".mkv" or ".avi" or ".webm";
+    // Small copies of previews, keyed by content hash. They keep a sent picture
+    // visible in the conversation after the original is moved or deleted.
+    internal static string ThumbnailDirectory = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "ClipBridge", "Thumbnails");
+    private static string? ThumbnailPath(string sha256) => sha256.Length == 64 && sha256.All(Uri.IsHexDigit) && sha256.Any(c => c != (char)48) ? Path.Combine(ThumbnailDirectory, sha256.ToUpperInvariant() + ".png") : null;
+    public static void Remember(string sha256, Image preview)
+    {
+        if (ThumbnailPath(sha256) is not { } path || File.Exists(path)) return;
+        try { Directory.CreateDirectory(ThumbnailDirectory); using var copy = new Bitmap(preview); copy.Save(path, System.Drawing.Imaging.ImageFormat.Png); }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException or System.Runtime.InteropServices.ExternalException) { }
+    }
+    public static Image? Recall(string sha256)
+    {
+        if (ThumbnailPath(sha256) is not { } path || !File.Exists(path)) return null;
+        try { using var stored = Image.FromFile(path); return new Bitmap(stored); }
+        catch (Exception e) when (e is IOException or ArgumentException or OutOfMemoryException or System.Runtime.InteropServices.ExternalException) { return null; }
+    }
+    public static void Forget(string sha256)
+    {
+        if (ThumbnailPath(sha256) is not { } path) return;
+        try { File.Delete(path); } catch (Exception e) when (e is IOException or UnauthorizedAccessException) { }
+    }
     // Preview pixels are separate from the original file sent over the wire.
     public static Image? Load(string path,int maxWidth=280,int maxHeight=170)
     {

@@ -71,6 +71,8 @@ internal static class Program
         Application.SetCompatibleTextRenderingDefault(false);
         string defaultDll = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "../../../../../bin/Release/net10.0-windows/ClipBridge.dll"));
         Assembly app = Assembly.LoadFrom(Environment.GetEnvironmentVariable("CLIPBRIDGE_TEST_DLL") ?? defaultDll);
+        // Keep preview thumbnails out of the real profile.
+        app.GetType("ClipBridge.Windows.MediaPreview")!.GetField("ThumbnailDirectory", BindingFlags.Static | BindingFlags.NonPublic)!.SetValue(null, Path.Combine(Path.GetTempPath(), "clipbridge-ui-smoke", "thumbnails"));
 
         if (Array.Exists(args, value => value == "--conversation-only")) { ConversationSmoke.Run(app, capture); return; }
         if (Array.Exists(args, value => value == "--palette-only")) { ConversationSmoke.RunPalette(app); return; }

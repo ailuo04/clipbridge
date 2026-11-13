@@ -31,7 +31,7 @@ internal sealed class TrayAppContext : ApplicationContext
     private ConversationView? _conversation;
 
 	private readonly FileTransferNode _files;
-    private readonly string _receiveDirectory = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "Downloads", "ClipBridge");
+    private readonly string _receiveDirectory = LocalFiles.ReceiveDirectory;
     private sealed record PendingFile(FileOffer Offer, IPAddress Address, TaskCompletionSource<bool> Reply);
     private readonly ConcurrentDictionary<string, PendingFile> _pending = new();
     private readonly ConcurrentDictionary<string, TransferProgress> _transfers = new();
@@ -175,7 +175,7 @@ internal sealed class TrayAppContext : ApplicationContext
     private PeerSnapshot[] WorkspacePeers()
     {
         var live=_node.GetPeerSnapshots();
-        return _devices.Trusted().Where(x=>x.Active).Select(trust=>live.FirstOrDefault(p=>p.PeerId==trust.Id)??new PeerSnapshot(trust.Name,trust.Address,SharedProtocol.TcpPort,false,false,null,trust.Id)).OrderBy(x=>x.Name,StringComparer.Ordinal).ToArray();
+        return _devices.Trusted().Where(x=>x.Active).Select(trust=>(live.FirstOrDefault(p=>p.PeerId==trust.Id)??new PeerSnapshot(trust.Name,trust.Address,SharedProtocol.TcpPort,false,false,null,trust.Id)) with { Platform = trust.Platform }).OrderBy(x=>x.Name,StringComparer.Ordinal).ToArray();
     }
     private WorkspaceForm CreateWorkspace()
     {

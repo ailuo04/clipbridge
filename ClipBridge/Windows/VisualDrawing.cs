@@ -77,6 +77,18 @@ internal static class VisualDrawing
 		}
 	}
 
+	// Square avatar tile with a phone or computer glyph: the same picture marks a
+	// device in the sidebar and beside its messages.
+	internal static void DrawDeviceAvatar(Graphics graphics, RectangleF tile, bool phone, Color fill, Color ink)
+	{
+		using (SolidBrush brush = new SolidBrush(fill))
+		{
+			FillRoundedRectangle(graphics, brush, tile, tile.Width * 0.22f);
+		}
+		float inset = tile.Width * 0.26f;
+		DrawDeviceGlyph(graphics, RectangleF.Inflate(tile, -inset, -inset), ink, phone, tile.Width / 34f);
+	}
+
 	internal static double MoveTowards(double current, double target, double amount)
 	{
 		if (Math.Abs(target - current) <= amount)

@@ -54,8 +54,8 @@ internal static class HistoryPresentation
     public static IReadOnlyList<string> Actions(string contentType, bool hasLocalFile)
     {
         if (string.Equals(contentType, "file", StringComparison.OrdinalIgnoreCase))
-            return hasLocalFile ? new[] { "打开本地文件", "删除记录" } : new[] { "删除记录" };
-        return new[] { "复制", "删除记录" };
+            return hasLocalFile ? new[] { "打开本地文件", "删除" } : new[] { "删除" };
+        return new[] { "复制", "删除" };
     }
 
     public static IReadOnlyList<string> Actions(HistoryLocalRecord entry) =>

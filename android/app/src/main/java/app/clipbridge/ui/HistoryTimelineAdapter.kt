@@ -13,7 +13,8 @@ class HistoryTimelineAdapter(
     private val onCopy: (String) -> Unit,
     private val onOpen: (android.net.Uri) -> Unit,
     private val onShare: (HistoryLocalRecord) -> Unit,
-    private val onDelete: (HistoryLocalRecord) -> Unit
+    private val onDelete: (HistoryLocalRecord) -> Unit,
+    private val peerIsComputer: () -> Boolean = { true }
 ) : BaseAdapter() {
     private var entries: List<HistoryLocalRecord> = emptyList()
 
@@ -29,8 +30,9 @@ class HistoryTimelineAdapter(
         val entry = getItem(position)
         val deviceId = localDeviceId()
         val recycled = convertView as? TimelineRowView
-        if (recycled != null && recycled.record == entry && recycled.localDeviceIdBound == deviceId) return recycled
-        return TimelineRowView(parent.context, ui, entry, deviceId, onCopy, onOpen, onShare, onDelete).apply {
+        val computer = peerIsComputer()
+        if (recycled != null && recycled.record == entry && recycled.localDeviceIdBound == deviceId && recycled.peerIsComputer == computer) return recycled
+        return TimelineRowView(parent.context, ui, entry, deviceId, computer, onCopy, onOpen, onShare, onDelete).apply {
             layoutParams = android.widget.AbsListView.LayoutParams(-1, -2)
         }
     }

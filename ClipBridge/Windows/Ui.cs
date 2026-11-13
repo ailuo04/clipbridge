@@ -4,9 +4,9 @@ namespace ClipBridge.Windows;
 
 internal static class Ui
 {
-	internal static Color Canvas = Color.FromArgb(229, 235, 244);
+	internal static Color Canvas = Color.FromArgb(243, 244, 246);
 
-	internal static Color Sidebar = Color.FromArgb(240, 244, 251);
+	internal static Color Sidebar = Color.FromArgb(233, 235, 239);
 
 	internal static Color Surface = Color.FromArgb(255, 255, 255);
 
@@ -14,13 +14,15 @@ internal static class Ui
 
 	internal static Color SurfaceMint = Color.FromArgb(255, 255, 255);
 
-	internal static Color FieldSurface = Color.FromArgb(238, 242, 249);
+	internal static Color FieldSurface = Color.FromArgb(245, 246, 248);
 
-	internal static Color SurfaceMutedSolid = Color.FromArgb(235, 240, 247);
+	internal static Color SurfaceMutedSolid = Color.FromArgb(238, 239, 242);
 
-	internal static Color SurfaceMuted = Color.FromArgb(235, 240, 247);
+	internal static Color SurfaceMuted = Color.FromArgb(238, 239, 242);
 
-	internal static Color SurfaceHover = Color.FromArgb(226, 236, 251);
+	internal static Color SurfaceHover = Color.FromArgb(222, 225, 231);
+
+	internal static Color SidebarSelected = Color.FromArgb(209, 213, 221);
 
 	internal static Color SurfaceIceBody = Color.FromArgb(255, 255, 255);
 
@@ -28,27 +30,27 @@ internal static class Ui
 
 	internal static Color SurfaceMutedBody = Color.FromArgb(255, 255, 255);
 
-	internal static Color Ink = Color.FromArgb(24, 32, 46);
+	internal static Color Ink = Color.FromArgb(25, 27, 32);
 
-	internal static Color Muted = Color.FromArgb(84, 97, 117);
+	internal static Color Muted = Color.FromArgb(96, 102, 113);
 
-	internal static Color Faint = Color.FromArgb(108, 122, 143);
+	internal static Color Faint = Color.FromArgb(134, 140, 151);
 
-	internal static Color Line = Color.FromArgb(201, 213, 231);
+	internal static Color Line = Color.FromArgb(221, 224, 229);
 
 	internal static Color Accent = Color.FromArgb(37, 99, 235);
 
 	internal static Color AccentDark = Color.FromArgb(30, 79, 200);
 
-	internal static Color AccentSoft = Color.FromArgb(219, 232, 255);
+	internal static Color AccentSoft = Color.FromArgb(226, 236, 255);
 
-	internal static Color AccentSoftSolid = Color.FromArgb(214, 230, 255);
+	internal static Color AccentSoftSolid = Color.FromArgb(222, 233, 255);
 
-	internal static Color BubbleOutgoing = Color.FromArgb(35, 92, 219);
+	internal static Color BubbleOutgoing = Color.FromArgb(41, 104, 240);
 
 	internal static Color BubbleOutgoingInk = Color.FromArgb(247, 250, 255);
 
-	internal static Color BubbleOutgoingMuted = Color.FromArgb(201, 220, 250);
+	internal static Color BubbleOutgoingMuted = Color.FromArgb(214, 228, 255);
 
 	internal static Color PrimarySurface = Color.FromArgb(37, 99, 235);
 
@@ -76,17 +78,17 @@ internal static class Ui
 
 	internal static Color Header = Color.FromArgb(255, 255, 255);
 
-	internal static Color HeaderRaised = Color.FromArgb(242, 246, 251);
+	internal static Color HeaderRaised = Color.FromArgb(244, 245, 247);
 
-	internal static Color HeaderText = Color.FromArgb(24, 32, 46);
+	internal static Color HeaderText = Color.FromArgb(25, 27, 32);
 
-	internal static Color HeaderMuted = Color.FromArgb(84, 97, 117);
+	internal static Color HeaderMuted = Color.FromArgb(96, 102, 113);
 
-	internal static Color ChromeRaised = Color.FromArgb(203, 213, 225);
+	internal static Color ChromeRaised = Color.FromArgb(208, 212, 219);
 
-	internal static Color ChromeLine = Color.FromArgb(197, 209, 228);
+	internal static Color ChromeLine = Color.FromArgb(214, 218, 224);
 
-	internal static Color ChromeMuted = Color.FromArgb(84, 97, 117);
+	internal static Color ChromeMuted = Color.FromArgb(96, 102, 113);
 
 	internal static UiColorTheme CurrentTheme { get; private set; } = UiColorTheme.Light;
 
@@ -105,6 +107,7 @@ internal static class Ui
 			SurfaceMutedSolid = Color.FromArgb(26, 34, 46);
 			SurfaceMuted = SurfaceMutedSolid;
 			SurfaceHover = Color.FromArgb(44, 58, 77);
+			SidebarSelected = Color.FromArgb(49, 64, 86);
 			SurfaceIceBody = Surface;
 			SurfaceMintBody = Surface;
 			SurfaceMutedBody = Surface;
@@ -141,29 +144,30 @@ internal static class Ui
 		}
 		else
 		{
-			Canvas = Color.FromArgb(229, 235, 244);
-			Sidebar = Color.FromArgb(240, 244, 251);
+			Canvas = Color.FromArgb(243, 244, 246);
+			Sidebar = Color.FromArgb(233, 235, 239);
 			Surface = Color.FromArgb(255, 255, 255);
 			SurfaceIce = Surface;
 			SurfaceMint = Surface;
-			FieldSurface = Color.FromArgb(238, 242, 249);
-			SurfaceMutedSolid = Color.FromArgb(235, 240, 247);
+			FieldSurface = Color.FromArgb(245, 246, 248);
+			SurfaceMutedSolid = Color.FromArgb(238, 239, 242);
 			SurfaceMuted = SurfaceMutedSolid;
-			SurfaceHover = Color.FromArgb(226, 236, 251);
+			SurfaceHover = Color.FromArgb(222, 225, 231);
+			SidebarSelected = Color.FromArgb(209, 213, 221);
 			SurfaceIceBody = Surface;
 			SurfaceMintBody = Surface;
 			SurfaceMutedBody = Surface;
-			Ink = Color.FromArgb(24, 32, 46);
-			Muted = Color.FromArgb(84, 97, 117);
-			Faint = Color.FromArgb(108, 122, 143);
-			Line = Color.FromArgb(201, 213, 231);
+			Ink = Color.FromArgb(25, 27, 32);
+			Muted = Color.FromArgb(96, 102, 113);
+			Faint = Color.FromArgb(134, 140, 151);
+			Line = Color.FromArgb(221, 224, 229);
 			Accent = Color.FromArgb(37, 99, 235);
 			AccentDark = Color.FromArgb(30, 79, 200);
-			AccentSoft = Color.FromArgb(219, 232, 255);
-			AccentSoftSolid = Color.FromArgb(214, 230, 255);
-			BubbleOutgoing = Color.FromArgb(35, 92, 219);
+			AccentSoft = Color.FromArgb(226, 236, 255);
+			AccentSoftSolid = Color.FromArgb(222, 233, 255);
+			BubbleOutgoing = Color.FromArgb(41, 104, 240);
 			BubbleOutgoingInk = Color.FromArgb(247, 250, 255);
-			BubbleOutgoingMuted = Color.FromArgb(201, 220, 250);
+			BubbleOutgoingMuted = Color.FromArgb(214, 228, 255);
 			PrimarySurface = Color.FromArgb(37, 99, 235);
 			PrimaryHover = Color.FromArgb(33, 86, 212);
 			PrimaryPressed = Color.FromArgb(29, 72, 162);
@@ -177,11 +181,11 @@ internal static class Ui
 			Danger = Color.FromArgb(190, 61, 78);
 			DangerSoft = Color.FromArgb(255, 230, 235);
 			Header = Color.FromArgb(255, 255, 255);
-			HeaderRaised = Color.FromArgb(242, 246, 251);
+			HeaderRaised = Color.FromArgb(244, 245, 247);
 			HeaderText = Ink;
 			HeaderMuted = Muted;
-			ChromeRaised = Color.FromArgb(203, 213, 225);
-			ChromeLine = Color.FromArgb(197, 209, 228);
+			ChromeRaised = Color.FromArgb(208, 212, 219);
+			ChromeLine = Color.FromArgb(214, 218, 224);
 			ChromeMuted = Muted;
 		}
 		CurrentTheme = theme;

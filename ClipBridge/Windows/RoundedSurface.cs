@@ -27,6 +27,9 @@ internal sealed class RoundedSurface : Panel
 	[System.ComponentModel.DesignerSerializationVisibility(System.ComponentModel.DesignerSerializationVisibility.Hidden)]
 	public Color BorderColor { get; set; } = Ui.Line;
 
+	[System.ComponentModel.DesignerSerializationVisibility(System.ComponentModel.DesignerSerializationVisibility.Hidden)]
+	public bool Flat { get; set; }
+
 	public double MotionProgress => Math.Max(_flash, _hover);
 
 	public RoundedSurface()
@@ -75,16 +78,17 @@ internal sealed class RoundedSurface : Panel
 	protected override void OnPaint(PaintEventArgs e)
 	{
 		e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
-		RectangleF rectangleF = new RectangleF(2f, 1f, (float)Width - 4f, (float)Height - 7f);
-		// Layered soft shadow: wide faint halo plus a tight contact shadow.
-		int shadowAlpha = Ui.HeaderIsDark ? 34 : 14;
-		for (int layer = 3; layer >= 1; layer--)
+		if (Flat)
 		{
-			using SolidBrush brush = new SolidBrush(Color.FromArgb(shadowAlpha / layer, 24, 40, 72));
-			RectangleF bounds = RectangleF.Inflate(rectangleF, layer - 1, layer - 1);
-			bounds.Offset(0f, layer * 1.2f);
-			VisualDrawing.FillRoundedRectangle(e.Graphics, brush, bounds, CornerRadius + layer - 1);
+			// Edge-to-edge band: one rule along the top is the only chrome.
+			e.Graphics.Clear(FillColor);
+			using Pen rule = new Pen(BorderColor);
+			e.Graphics.SmoothingMode = SmoothingMode.None;
+			e.Graphics.DrawLine(rule, 0, 0, Width, 0);
+			return;
 		}
+		// Cards separate from the canvas by fill and a hairline, not a shadow.
+		RectangleF rectangleF = new RectangleF(2f, 1f, (float)Width - 4f, (float)Height - 7f);
 		using (SolidBrush brush2 = new SolidBrush(VisualMotion.Mix(FillColor, Ui.SurfaceHover, _hover * 0.18)))
 		{
 			VisualDrawing.FillRoundedRectangle(e.Graphics, brush2, rectangleF, CornerRadius);
