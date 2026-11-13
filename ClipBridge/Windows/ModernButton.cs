@@ -117,7 +117,7 @@ internal sealed class ModernButton : Button
 		}
 		if (!Enabled)
 		{
-			color = Ui.SurfaceMuted;
+			color = Ui.SurfaceMutedSolid;
 			color2 = Ui.Line;
 			foreColor = Ui.Faint;
 		}
@@ -141,7 +141,7 @@ internal sealed class ModernButton : Button
 		}
 		if (color2.A > 0)
 		{
-			using Pen pen = new Pen(VisualMotion.Mix(color2, Color.FromArgb(color2.A, Color.White), 0.15), 1f);
+			using Pen pen = new Pen(color2, 1f);
 			VisualDrawing.DrawRoundedRectangle(e.Graphics, pen, rectangleF, 10f);
 		}
 		if (_rippleProgress < 1.0 && Enabled)

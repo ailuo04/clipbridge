@@ -80,7 +80,7 @@ internal static class DevicesFormSmoke
         Type trustType = app.GetType("ClipBridge.Windows.DeviceTrust")!;
         Type peerType = app.GetType("ClipBridge.Windows.NearbyDevice")!;
         Type requestType = app.GetType("ClipBridge.Windows.PairingRequest")!;
-        Type formType = app.GetType("ClipBridge.Windows.DevicesForm")!;
+        Type viewType = app.GetType("ClipBridge.Windows.DevicesView")!;
         Type uiType = app.GetType("ClipBridge.Windows.Ui")!;
         Type colorType = app.GetType("ClipBridge.Windows.UiColorTheme")!;
         void Theme(string value) => uiType.GetMethod("ApplyTheme", BindingFlags.Static | BindingFlags.NonPublic)!.Invoke(null, new[] { Enum.Parse(colorType, value) });
@@ -101,8 +101,15 @@ internal static class DevicesFormSmoke
         Peer(computer, "工作电脑", "windows", true);
         Peer(nearbyId, "Pixel 9", "android", false);
         Theme("Light");
-        using Form form = (Form)Activator.CreateInstance(formType, hub)!;
-        void Refresh() { formType.GetMethod("RefreshRows", BindingFlags.Instance | BindingFlags.NonPublic)!.Invoke(form, null); Pump(); }
+        // The application hosts DevicesView inside the workspace; build the same
+        // host here instead of keeping a legacy standalone window alive.
+        using Form form = new Form { Text = "ClipBridge · 设备与配对", ClientSize = new Size(640, 640), MinimumSize = new Size(500, 500), StartPosition = FormStartPosition.CenterParent };
+        Control view = (Control)Activator.CreateInstance(viewType, hub)!;
+        view.Dock = DockStyle.Fill;
+        form.Controls.Add(view);
+        void ApplyViewTheme() { form.BackColor = (Color)uiType.GetField("Canvas", BindingFlags.Static | BindingFlags.NonPublic)!.GetValue(null)!; viewType.GetMethod("ApplyTheme")!.Invoke(view, null); }
+        ApplyViewTheme();
+        void Refresh() { viewType.GetMethod("RefreshRows", BindingFlags.Instance | BindingFlags.NonPublic)!.Invoke(view, null); Pump(); }
         form.Show(); Pump(220);
         Size initialClientSize = form.ClientSize;
         Check(!Descendants(form).OfType<Button>().Any(button => button.Name == "ShowPairingQrButton"), "QR is displayed inline without a separate display button");
@@ -156,7 +163,7 @@ internal static class DevicesFormSmoke
         manualToggle.PerformClick(); Pump();
         if (capture) Capture(form, "devices-manual");
         input.Focus(); input.Select(3, 2);
-        Theme("Dark"); formType.GetMethod("ApplyTheme")!.Invoke(form, null); Pump();
+        Theme("Dark"); ApplyViewTheme(); Pump();
         Check(ReferenceEquals(input, Descendants(form).OfType<TextBox>().Single()) && input.Text == "192.168.1.88" && input.SelectionStart == 3, "theme switching retains the IP field and selection");
         Color ink = (Color)uiType.GetField("Ink", BindingFlags.Static | BindingFlags.NonPublic)!.GetValue(null)!;
         Check(input.ForeColor == ink && form.BackColor == (Color)uiType.GetField("Canvas", BindingFlags.Static | BindingFlags.NonPublic)!.GetValue(null)!, "dark palette reaches the window and native input");
@@ -185,19 +192,19 @@ internal static class DevicesFormSmoke
         Check(!Descendants(form).OfType<Button>().Any(button => button.Name == "ConfirmPairing-" + session && button.Enabled), "confirmation expires even when no discovery snapshot changes");
         requestStatus = Descendants(form).Single(control => control.Name == "PairingRequestStatusCapsule");
         Check(requestStatus.AccessibleDescription!.Contains("请求已过期"), "expired request is clearly labeled in its capsule");
-        Theme("Light"); formType.GetMethod("ApplyTheme")!.Invoke(form, null); Pump();
+        Theme("Light"); ApplyViewTheme(); Pump();
         if (capture) Capture(form, "devices-request-light");
-        Theme("Dark"); formType.GetMethod("ApplyTheme")!.Invoke(form, null); Pump();
+        Theme("Dark"); ApplyViewTheme(); Pump();
         ((Button)Find(form, "RevokeDevice-" + phone)).PerformClick(); Pump(1100);
         Check(!memory.Items.Any(record => (string)trustType.GetProperty("Id")!.GetValue(record)! == phone), "cancel pairing removes the chosen device from the synthetic store");
         pending.GetType().GetMethod("Clear")!.Invoke(pending, null);
         memory.Items.Clear(); nearby.GetType().GetMethod("Clear")!.Invoke(nearby, null); Refresh();
-        Theme("Light"); formType.GetMethod("ApplyTheme")!.Invoke(form, null); Pump();
+        Theme("Light"); ApplyViewTheme(); Pump();
         Check(Descendants(form).Any(control => control.Text.Contains("还没有配对设备")) && Descendants(form).Any(control => control.Text.Contains("正在搜索")), "empty lists explain pairing and discovery");
         if (capture) Capture(form, "devices-empty");
         form.Close(); Pump();
         var remainingStatusHandlers = (Action<string>?)hubType.GetField("Status", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(hub);
-        Check(remainingStatusHandlers == null || remainingStatusHandlers.GetInvocationList().All(handler => !ReferenceEquals(handler.Target, form)), "closing unsubscribes hub status notifications");
+        Check(remainingStatusHandlers == null || remainingStatusHandlers.GetInvocationList().All(handler => !ReferenceEquals(handler.Target, view)), "closing unsubscribes hub status notifications");
         Console.WriteLine("DEVICE WINDOW TESTS PASSED");
     }
 }

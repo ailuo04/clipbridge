@@ -53,6 +53,8 @@ internal sealed class ConversationTimelineControl : UserControl
     }
 
     private readonly List<MessageRow> _rows = new();
+    private readonly List<DaySeparator> _separators = new();
+    private readonly List<Control> _order = new();
     private HistoryLocalRecord[] _entries=Array.Empty<HistoryLocalRecord>();
     private string _signature = string.Empty;
     private string? _partition;
@@ -93,9 +95,26 @@ internal sealed class ConversationTimelineControl : UserControl
         {
             foreach (MessageRow row in _rows) row.Dispose();
             _rows.Clear();
+            foreach (DaySeparator marker in _separators) marker.Dispose();
+            _separators.Clear();
+            _order.Clear();
             _list.Controls.Clear();
+            DateTime? currentDay = null;
             foreach (HistoryLocalRecord entry in values.SelectMany(PresentationRecords))
             {
+                DateTime day = DateTimeOffset.FromUnixTimeMilliseconds(entry.Event.CreatedUtc).ToLocalTime().Date;
+                if (currentDay != day)
+                {
+                    currentDay = day;
+                    var marker = new DaySeparator(day)
+                    {
+                        Width = Math.Max(260, _list.ClientSize.Width - SystemInformation.VerticalScrollBarWidth - 8),
+                        Margin = new Padding(0, 0, 0, 6)
+                    };
+                    _separators.Add(marker);
+                    _order.Add(marker);
+                    _list.Controls.Add(marker);
+                }
                 var bubble = new HistoryEntryControl(entry, localDeviceId);
                 bool outgoing = string.Equals(entry.Event.SenderDeviceId, localDeviceId, StringComparison.Ordinal);
                 var row = new MessageRow(bubble, outgoing)
@@ -107,6 +126,7 @@ internal sealed class ConversationTimelineControl : UserControl
                 bubble.CopyRequested += value => CopyRequested?.Invoke(value);
                 bubble.OpenRequested += value => OpenRequested?.Invoke(value);
                 _rows.Add(row);
+                _order.Add(row);
                 _list.Controls.Add(row);
             }
             _empty.Visible = _rows.Count == 0;
@@ -135,6 +155,9 @@ internal sealed class ConversationTimelineControl : UserControl
         _entries=Array.Empty<HistoryLocalRecord>();
         foreach (MessageRow row in _rows) row.Dispose();
         _rows.Clear();
+        foreach (DaySeparator marker in _separators) marker.Dispose();
+        _separators.Clear();
+        _order.Clear();
         _list.Controls.Clear();
         _list.AutoScrollMinSize = Size.Empty;
         _list.Visible = false;
@@ -148,6 +171,7 @@ internal sealed class ConversationTimelineControl : UserControl
         _list.BackColor = Ui.Canvas;
         _empty.ForeColor = Ui.Muted;
         foreach (MessageRow row in _rows) row.Bubble.ApplyTheme();
+        foreach (DaySeparator marker in _separators) marker.Invalidate();
         Invalidate(true);
     }
 
@@ -161,11 +185,11 @@ internal sealed class ConversationTimelineControl : UserControl
     {
         int width = Math.Max(260, _list.ClientSize.Width - SystemInformation.VerticalScrollBarWidth - 8);
         int top = _list.AutoScrollPosition.Y;
-        foreach (MessageRow row in _rows)
+        foreach (Control item in _order)
         {
-            row.Width = width;
-            row.Location = new Point(0, top);
-            top += row.Height + row.Margin.Bottom;
+            item.Width = width;
+            item.Location = new Point(0, top);
+            top += item.Height + item.Margin.Bottom;
         }
         _list.AutoScrollMinSize = new Size(0, top - _list.AutoScrollPosition.Y);
     }

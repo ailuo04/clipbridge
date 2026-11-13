@@ -80,7 +80,7 @@ internal sealed class ConversationView : UserControl
         FlatStyle = FlatStyle.Flat,
         Margin = new Padding(4, 0, 0, 0)
     };
-    private readonly ConversationTimelineControl _timeline = new() { Name = "ConversationTimeline", Dock = DockStyle.Fill };
+    private readonly ConversationTimelineControl _timeline = new() { Name = "ConversationTimeline", Dock = DockStyle.Fill, Padding = new Padding(22, 12, 22, 4) };
     private readonly MessageComposer _composer = new()
     {
         Name = "ConversationComposer",
@@ -147,7 +147,9 @@ internal sealed class ConversationView : UserControl
     public bool IsAtLatest => _timeline.IsAtLatest;
     public bool HasActiveSends => _sending.Count > 0;
     public event Action? StateChanged;
-    private readonly Label _peerTitle = new() { Dock = DockStyle.Fill, Font = Ui.Font(12f, FontStyle.Bold), TextAlign = ContentAlignment.MiddleLeft };
+    private readonly Label _peerTitle = new() { AutoSize = true, Anchor = AnchorStyles.Left, Font = Ui.Font(13f, FontStyle.Bold), TextAlign = ContentAlignment.MiddleLeft, Margin = Padding.Empty };
+    private readonly ConnectionPill _connection = new() { Name = "ConversationConnectionPill", Anchor = AnchorStyles.Left, Margin = new Padding(12, 0, 0, 0) };
+    private readonly ConversationHeaderSurface _header = new() { Name = "ConversationHeader", Dock = DockStyle.Fill, Padding = new Padding(24, 10, 18, 10), Margin = Padding.Empty };
     public void SetEmbedded() { _peers.Parent!.Controls.Remove(_peers); ((TableLayoutPanel)_status.Parent!).Controls.Add(_peerTitle, 0, 0); _manage.Text = ""; _manage.Glyph = "\uE712"; _manage.AutoSize = false; _manage.MinimumSize = new Size(36, 36); _manage.Size = new Size(36, 36); _manage.Tone = ButtonTone.Ghost; _manage.AccessibleName = "设备选项"; _manage.AccessibleDescription = "管理当前设备"; _openDirectory.Visible = false; }
     public void ForgetPeer(string id) { if (_sendCancellation.TryGetValue(id, out var cancel)) cancel.Cancel(); _drafts.Remove(id); if (_draftPeer == id) { _draftPeer = null; _attachments = new(); _composer.Clear(); _selected = null; RenderAttachments(); } }
     private bool _resourcesDisposed;
@@ -189,15 +191,15 @@ internal sealed class ConversationView : UserControl
         {
             Name = "ConversationRoot",
             Dock = DockStyle.Fill,
-            Padding = new Padding(22, 18, 22, 16),
+            Padding = Padding.Empty,
             Margin = Padding.Empty,
             ColumnCount = 1,
             RowCount = 3,
             BackColor = Ui.Canvas
         };
-        _root.RowStyles.Add(new RowStyle(SizeType.Absolute, 82));
+        _root.RowStyles.Add(new RowStyle(SizeType.Absolute, 78));
         _root.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
-        _root.RowStyles.Add(new RowStyle(SizeType.Absolute, 166));
+        _root.RowStyles.Add(new RowStyle(SizeType.Absolute, 182));
         Controls.Add(_root);
 
         _root.Controls.Add(BuildHeader(), 0, 0);
@@ -247,6 +249,7 @@ internal sealed class ConversationView : UserControl
             {
                 _selected = null;
                 _send.Enabled = false; _composer.ReadOnly = true;
+                _connection.SetState(false);
                 _status.Text = "未连接";
                 _subtitle.Text = "暂无设备 · 请先完成配对";
                 _timeline.SetMessage("连接设备后，这里会显示最近 7 天的收发记录。\r\n历史记录只保留 7 天，删除记录不会删除本地文件。");
@@ -270,6 +273,7 @@ internal sealed class ConversationView : UserControl
         BackColor = Ui.Canvas;
         ForeColor = Ui.Ink;
         _root.BackColor = Ui.Canvas;
+        _header.BackColor = Ui.Surface;
         _status.ForeColor = Ui.Muted;
         _peerTitle.ForeColor = Ui.Ink;
         _subtitle.ForeColor = Ui.Muted;
@@ -288,6 +292,8 @@ internal sealed class ConversationView : UserControl
             surface.BorderColor = Ui.Line;
             surface.Invalidate();
         }
+        _connection.Invalidate();
+        _header.Invalidate();
         _timeline.ApplyTheme();
         Invalidate(true);
     }
@@ -300,19 +306,23 @@ internal sealed class ConversationView : UserControl
 
     private Control BuildHeader()
     {
-        var header = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, RowCount = 2, Padding = new Padding(4, 4, 4, 12) };
-        header.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100)); header.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
-        header.RowStyles.Add(new RowStyle(SizeType.Absolute, 42)); header.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
-        _peers.Font = Ui.Font(12f, FontStyle.Bold); _peers.FlatStyle = FlatStyle.Flat;
+        var header = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 3, RowCount = 2, BackColor = Color.Transparent, Margin = Padding.Empty };
+        header.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+        header.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        header.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+        header.RowStyles.Add(new RowStyle(SizeType.Absolute, 38)); header.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        _peers.Font = Ui.Font(12f, FontStyle.Bold); _peers.FlatStyle = FlatStyle.Flat; _peers.MinimumSize = new Size(240, 34); _peers.Anchor = AnchorStyles.Left;
         header.Controls.Add(_peers, 0, 0);
-        var actions = new FlowLayoutPanel { AutoSize = true, Dock = DockStyle.Fill, WrapContents = false, Margin = Padding.Empty };
-        actions.Controls.Add(_openDirectory); actions.Controls.Add(_manage); header.Controls.Add(actions, 1, 0);
-        _status.Text = "已配对设备直接接收"; header.Controls.Add(_status, 0, 1); header.SetColumnSpan(_status, 2);
-        return header;
+        header.Controls.Add(_connection, 1, 0);
+        var actions = new FlowLayoutPanel { AutoSize = true, Dock = DockStyle.Fill, WrapContents = false, BackColor = Color.Transparent, Margin = Padding.Empty };
+        actions.Controls.Add(_openDirectory); actions.Controls.Add(_manage); header.Controls.Add(actions, 2, 0);
+        _status.Text = "已配对设备直接接收"; _status.Font = Ui.Font(8.5f); header.Controls.Add(_status, 0, 1); header.SetColumnSpan(_status, 3);
+        _header.Controls.Add(header);
+        return _header;
     }
     private TableLayoutPanel BuildComposer()
     {
-        var shell = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 1, Margin = new Padding(0, 8, 0, 0) };
+        var shell = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 1, Margin = new Padding(22, 6, 22, 16) };
         var surface = new RoundedSurface { Name = "ConversationInputSurface", Dock = DockStyle.Fill, CornerRadius = 14, Padding = new Padding(16), FillColor = Ui.Surface, BorderColor = Ui.Line };
         var layout = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 4, BackColor = Color.Transparent };
         layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 38)); layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 0)); layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100)); layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 38));
@@ -341,6 +351,7 @@ internal sealed class ConversationView : UserControl
         }
         _selected = choice;
         _peerTitle.Text = choice.Snapshot.Name;
+        _connection.SetState(choice.Snapshot.RecentlySeen);
         _send.Enabled = !_busy && choice.Snapshot.RecentlySeen; _composer.ReadOnly = _busy;
         StateChanged?.Invoke();
         if (_selected is null)
@@ -350,8 +361,8 @@ internal sealed class ConversationView : UserControl
             _timeline.SetMessage("连接设备后，这里会显示最近 7 天的收发记录。\r\n历史记录只保留 7 天，删除记录不会删除本地文件。\r\n\r\n请从设备管理完成配对，然后回到这里开始发送和接收。");
             return;
         }
-        _status.Text = _selected.Snapshot.RecentlySeen ? "● 在线 · 已配对设备直接接收" : "● 离线";
-        _subtitle.Text = $"{_selected.Snapshot.Name} · {_status.Text} · {_selected.Snapshot.Address}";
+        _status.Text = _selected.Snapshot.RecentlySeen ? "已配对设备直接接收 · " + _selected.Snapshot.Address : "设备离线，连接后可继续发送 · " + _selected.Snapshot.Address;
+        _subtitle.Text = $"{_selected.Snapshot.Name} · {(_selected.Snapshot.RecentlySeen ? "在线" : "离线")} · {_selected.Snapshot.Address}";
         RefreshSelectedHistory();
     }
 
@@ -467,7 +478,7 @@ internal sealed class ConversationView : UserControl
             tile.Controls.Add(remove); _attachmentStrip.Controls.Add(tile);
         }
         if (_attachmentStrip.Parent is TableLayoutPanel layout) layout.RowStyles[1].Height = _attachments.Count > 0 ? 80 : 0;
-        _root.RowStyles[2].Height = _attachments.Count > 0 ? 246 : 166;
+        _root.RowStyles[2].Height = _attachments.Count > 0 ? 262 : 182;
     }
 
     private void ComposerKeyDown(object? sender, KeyEventArgs e)

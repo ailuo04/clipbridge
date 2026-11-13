@@ -21,18 +21,19 @@ internal sealed class WorkspaceForm : Form
     private readonly Action<string> _revoke;
     private readonly Action _checkUpdate;
     private readonly Action<UiThemeMode> _setTheme;
-    private readonly Panel _sidebar = new() { Dock = DockStyle.Fill, Padding = new Padding(14, 22, 14, 14) };
+    private readonly SidebarSurface _sidebar = new() { Dock = DockStyle.Fill, Padding = new Padding(14, 22, 14, 14) };
     private readonly FlowLayoutPanel _deviceList = new() { Name = "WorkspaceDevices", Dock = DockStyle.Fill, FlowDirection = FlowDirection.TopDown, WrapContents = false, AutoScroll = true };
     private readonly Panel _content = new() { Name = "WorkspaceContent", Dock = DockStyle.Fill };
-    private readonly Label _status = new() { Dock = DockStyle.Bottom, Height = 26, TextAlign = ContentAlignment.MiddleLeft, AutoEllipsis = true };
+    private readonly StatusStripLabel _status = new() { Dock = DockStyle.Bottom, Height = 28, TextAlign = ContentAlignment.MiddleLeft, AutoEllipsis = true, Padding = new Padding(16, 1, 12, 0), Font = Ui.Font(8.5f) };
     private readonly ModernButton _folder = new("接收文件夹", ButtonTone.Ghost, "\uE8B7") { Name = "WorkspaceReceiveFolder", AutoSize = false, TextAlign = ContentAlignment.MiddleLeft, Dock = DockStyle.Fill, Margin = Padding.Empty, AccessibleName = "打开接收文件夹" };
     private readonly ModernButton _settings = new("设置", ButtonTone.Ghost, "\uE713") { Name = "WorkspaceSettings", AutoSize = false, TextAlign = ContentAlignment.MiddleLeft, Dock = DockStyle.Fill, Margin = Padding.Empty, AccessibleName = "应用设置" };
     private readonly ModernButton _update = new("当前为最新版", ButtonTone.Ghost) { Name = "WorkspaceUpdates", AutoSize = false, TextAlign = ContentAlignment.MiddleCenter, Dock = DockStyle.Fill, Margin = new Padding(2, 1, 2, 1), AccessibleName = "检查 ClipBridge 更新" };
     private readonly RoundedSurface _availableUpdate = new() { Name = "WorkspaceAvailableUpdate", Dock = DockStyle.Fill, CornerRadius = 8, FillColor = Ui.AccentSoftSolid, BorderColor = Ui.Accent, Padding = new Padding(4, 2, 2, 2), Margin = Padding.Empty, Visible = false };
     private readonly Label _availableVersion = new() { Name = "WorkspaceAvailableVersion", Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft, Font = Ui.Font(8.2f, FontStyle.Bold), ForeColor = Ui.Accent, AutoEllipsis = true, Margin = new Padding(4, 0, 0, 0) };
     private readonly ModernButton _updateNow = new("立即更新", ButtonTone.Primary) { Name = "WorkspaceUpdateNowButton", AutoSize = false, Size = new Size(84, 30), Margin = new Padding(0, 0, 2, 0), AccessibleName = "立即安装可用更新" };
-    private readonly TableLayoutPanel _sidebarBottom = new() { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 5, Margin = Padding.Empty };
-    private readonly Panel _navSeparator = new() { Name = "WorkspaceNavSeparator", Height = 1, Dock = DockStyle.Fill, Margin = new Padding(8, 5, 8, 5) };
+    private readonly TableLayoutPanel _sidebarBottom = new() { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 6, Margin = Padding.Empty };
+    private readonly Panel _actionsSeparator = new() { Name = "WorkspaceActionsSeparator", Height = 1, Dock = DockStyle.Fill, Margin = new Padding(8, 6, 8, 6), BackColor = Ui.Line };
+    private readonly Panel _navSeparator = new() { Name = "WorkspaceNavSeparator", Height = 1, Dock = DockStyle.Fill, Margin = new Padding(8, 5, 8, 5), BackColor = Ui.Line };
     private UpdateSidebarState _updateStatus = UpdateSidebarState.Latest;
     private FlowLayoutPanel? _rollbackPage;
     private IReadOnlyList<GitHubRollbackCandidate>? _rollbackCandidates;
@@ -62,7 +63,7 @@ internal sealed class WorkspaceForm : Form
         Text = "ClipBridge · 互传"; Icon = AppIcon.Load(); StartPosition = FormStartPosition.CenterScreen; ClientSize = new Size(1080, 760); MinimumSize = new Size(820, 620); Font = Ui.Font(9.5f); DoubleBuffered = true; AutoScaleMode = AutoScaleMode.Dpi;
         LoadState();
         var grid = new TableLayoutPanel { Name = "WorkspaceRoot", Dock = DockStyle.Fill, ColumnCount = 2, RowCount = 1, Margin = Padding.Empty }; grid.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 236)); grid.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100)); grid.Controls.Add(_sidebar, 0, 0); grid.Controls.Add(_content, 1, 0); Controls.Add(grid); Controls.Add(_pageTransition); _pageTransition.BringToFront(); Resize += (_, _) => _pageTransition.Finish();
-        var nav = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 5, Margin = Padding.Empty }; nav.RowStyles.Add(new RowStyle(SizeType.Absolute, 74)); nav.RowStyles.Add(new RowStyle(SizeType.Absolute, 56)); nav.RowStyles.Add(new RowStyle(SizeType.Absolute, 28)); nav.RowStyles.Add(new RowStyle(SizeType.Percent, 100)); nav.RowStyles.Add(new RowStyle(SizeType.Absolute, 190)); _sidebar.Controls.Add(nav);
+        var nav = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 5, Margin = Padding.Empty }; nav.RowStyles.Add(new RowStyle(SizeType.Absolute, 74)); nav.RowStyles.Add(new RowStyle(SizeType.Absolute, 56)); nav.RowStyles.Add(new RowStyle(SizeType.Absolute, 28)); nav.RowStyles.Add(new RowStyle(SizeType.Percent, 100)); nav.RowStyles.Add(new RowStyle(SizeType.Absolute, 203)); _sidebar.Controls.Add(nav);
         var brand = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, RowCount = 2, Padding = new Padding(4, 2, 0, 16), Margin = Padding.Empty };
         brand.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 42)); brand.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         brand.RowStyles.Add(new RowStyle(SizeType.Absolute, 26)); brand.RowStyles.Add(new RowStyle(SizeType.Absolute, 20));
@@ -70,7 +71,8 @@ internal sealed class WorkspaceForm : Form
         brand.Controls.Add(new Label { Text = "ClipBridge", Font = Ui.Font(12f, FontStyle.Bold), Dock = DockStyle.Fill, TextAlign = ContentAlignment.BottomLeft, Margin = Padding.Empty }, 1, 0);
         brand.Controls.Add(new Label { Text = Environment.MachineName, Font = Ui.Font(8f), Tag = "muted", Dock = DockStyle.Fill, AutoEllipsis = true, TextAlign = ContentAlignment.MiddleLeft, Margin = Padding.Empty }, 1, 1); nav.Controls.Add(brand, 0, 0);
         var add = new ModernButton("添加设备", ButtonTone.Secondary, "\uE710") { Name = "WorkspaceAddDevice", AutoSize = false, Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right, Height = 38, Margin = new Padding(2, 8, 6, 10) }; add.Click += (_, _) => ShowDevices(); nav.Controls.Add(add, 0, 1);
-        nav.Controls.Add(new Label { Text = "设备会话", Dock = DockStyle.Fill, Padding = new Padding(8, 4, 0, 0), Tag = "muted", Font = Ui.Font(8.5f) }, 0, 2); nav.Controls.Add(_deviceList, 0, 3);
+        nav.Controls.Add(new Label { Name = "WorkspaceDevicesHeading", Text = "设备会话", Dock = DockStyle.Fill, Padding = new Padding(10, 6, 0, 0), Tag = "section", Font = Ui.Font(8.25f, FontStyle.Bold) }, 0, 2); nav.Controls.Add(_deviceList, 0, 3);
+        _sidebarBottom.RowStyles.Add(new RowStyle(SizeType.Absolute, 14));
         _sidebarBottom.RowStyles.Add(new RowStyle(SizeType.Absolute, 42));
         _sidebarBottom.RowStyles.Add(new RowStyle(SizeType.Absolute, 38));
         _sidebarBottom.RowStyles.Add(new RowStyle(SizeType.Absolute, 12));
@@ -87,12 +89,13 @@ internal sealed class WorkspaceForm : Form
         availableLayout.Controls.Add(_availableVersion, 0, 0);
         availableLayout.Controls.Add(_updateNow, 1, 0);
         _availableUpdate.Controls.Add(availableLayout);
-        _sidebarBottom.Controls.Add(_update, 0, 0);
-        _sidebarBottom.Controls.Add(_availableUpdate, 0, 0);
-        _sidebarBottom.Controls.Add(_folder, 0, 1);
-        _sidebarBottom.Controls.Add(_navSeparator, 0, 2);
-        _sidebarBottom.Controls.Add(_settings, 0, 3);
-        _sidebarBottom.Controls.Add(new Label { Text = "● 局域网直连", Tag = "muted", Dock = DockStyle.Fill, Padding = new Padding(14, 8, 0, 0), Font = Ui.Font(8f) }, 0, 4);
+        _sidebarBottom.Controls.Add(_actionsSeparator, 0, 0);
+        _sidebarBottom.Controls.Add(_update, 0, 1);
+        _sidebarBottom.Controls.Add(_availableUpdate, 0, 1);
+        _sidebarBottom.Controls.Add(_folder, 0, 2);
+        _sidebarBottom.Controls.Add(_navSeparator, 0, 3);
+        _sidebarBottom.Controls.Add(_settings, 0, 4);
+        _sidebarBottom.Controls.Add(new Label { Text = "● 局域网直连", Tag = "muted", Dock = DockStyle.Fill, Padding = new Padding(14, 8, 0, 0), Font = Ui.Font(8f) }, 0, 5);
         nav.Controls.Add(_sidebarBottom, 0, 4);
         Conversation = new(history, localId, getPeers, sendText, sendFiles, openFolder, ShowPeerMenu) { Dock = DockStyle.Fill }; Conversation.SetEmbedded(); _content.Controls.Add(Conversation); _content.Controls.Add(_status);
         if (devicesPage != null) { devicesPage.Dock = DockStyle.Fill; devicesPage.Visible = false; _content.Controls.Add(devicesPage); }
@@ -336,7 +339,7 @@ internal sealed class WorkspaceForm : Form
 
     private void ShowPeerMenu() { var peer = SelectedPeer; if (peer == null) return; var menu = new RoundedContextMenuStrip(); menu.Items.Add(peer.Name).Enabled = false; menu.Items.Add("删除设备", null, (_, _) => { if (MessageBox.Show(this, "删除“" + peer.Name + "”并取消配对？\n已接收的本机文件会保留。", "删除设备", MessageBoxButtons.OKCancel, MessageBoxIcon.Question) != DialogResult.OK) return; Conversation.ForgetPeer(peer.PeerId); _revoke(peer.PeerId); _readThrough.Remove(peer.PeerId); RefreshWorkspace(); SaveState(); }); menu.Closed += (_, _) => menu.Dispose(); menu.Show(Cursor.Position); }
     private UiThemeMode _themeMode;
-    public void ApplyTheme(UiThemeMode mode) { _themeMode = mode; BackColor = Ui.Canvas; ForeColor = Ui.Ink; _sidebar.BackColor = Ui.FieldSurface; _content.BackColor = Ui.Canvas; _status.ForeColor = Ui.Muted; void Colorize(Control control) { if (control is Label label) label.ForeColor = (string?)label.Tag == "muted" ? Ui.Muted : Ui.Ink; foreach (Control child in control.Controls) Colorize(child); } Colorize(_sidebar); _folder.GlyphColor = Ui.Accent; _settings.GlyphColor = Ui.Muted; _folder.Invalidate(); _settings.Invalidate(); _update.Tone = _updateStatus == UpdateSidebarState.Failed ? ButtonTone.Danger : ButtonTone.Secondary; _update.Invalidate(); _availableUpdate.FillColor = Ui.AccentSoftSolid; _availableUpdate.BorderColor = Ui.Accent; _availableVersion.ForeColor = Ui.Accent; Conversation.ApplyTheme(); if (_devicesPage is DevicesView devices) devices.ApplyTheme(); if (_page == "settings") ShowSettings(); if (_page == "updates") ShowUpdates(); if (_page == "rollback") ShowRollbackHistory(); _signature = ""; RefreshSidebar(); Invalidate(true); }
+    public void ApplyTheme(UiThemeMode mode) { _themeMode = mode; BackColor = Ui.Canvas; ForeColor = Ui.Ink; _sidebar.BackColor = Ui.Sidebar; _content.BackColor = Ui.Canvas; _status.BackColor = Ui.Sidebar; _status.ForeColor = Ui.Muted; _navSeparator.BackColor = Ui.Line; _actionsSeparator.BackColor = Ui.Line; void Colorize(Control control) { if (control is Label label) label.ForeColor = (string?)label.Tag switch { "section" => Ui.Faint, "muted" => Ui.Muted, _ => Ui.Ink }; foreach (Control child in control.Controls) Colorize(child); } Colorize(_sidebar); _folder.GlyphColor = Ui.Accent; _settings.GlyphColor = Ui.Muted; _folder.Invalidate(); _settings.Invalidate(); _update.Tone = _updateStatus == UpdateSidebarState.Failed ? ButtonTone.Danger : ButtonTone.Secondary; _update.Invalidate(); _availableUpdate.FillColor = Ui.AccentSoftSolid; _availableUpdate.BorderColor = Ui.Accent; _availableVersion.ForeColor = Ui.Accent; Conversation.ApplyTheme(); if (_devicesPage is DevicesView devices) devices.ApplyTheme(); if (_page == "settings") ShowSettings(); if (_page == "updates") ShowUpdates(); if (_page == "rollback") ShowRollbackHistory(); _signature = ""; RefreshSidebar(); Invalidate(true); }
     public void ShowControlPanel() { Show(); if (WindowState == FormWindowState.Minimized) WindowState = FormWindowState.Normal; Activate(); }
     public void AddEvent(string text) { _status.Text = text; System.Diagnostics.Trace.WriteLine(text); }
     public void SetUpdateAvailable(string? version, Action? openUpdate)
@@ -353,7 +356,7 @@ internal sealed class WorkspaceForm : Form
         bool available = state == UpdateSidebarState.Available && _openAvailableUpdate != null;
         _update.Visible = !available;
         _availableUpdate.Visible = available;
-        _sidebarBottom.RowStyles[0].Height = available ? 42 : 38;
+        _sidebarBottom.RowStyles[1].Height = available ? 42 : 38;
         _update.Enabled = state is UpdateSidebarState.Latest or UpdateSidebarState.Failed;
         _update.Tone = state == UpdateSidebarState.Failed ? ButtonTone.Danger : ButtonTone.Secondary;
         _update.Text = state switch
@@ -443,23 +446,42 @@ internal sealed class WorkspaceDeviceRow : Control
     {
         base.OnPaint(e);
         Graphics g = e.Graphics; g.SmoothingMode = SmoothingMode.AntiAlias;
-        RectangleF bounds = new(1, 1, Width - 3, Height - 5);
-        Color fill = _selected ? Ui.AccentSoftSolid : _hovering ? Ui.SurfaceHover : Ui.FieldSurface;
+        RectangleF bounds = new(1, 1, Width - 3, Height - 7);
+        Color fill = _selected ? Ui.AccentSoftSolid : _hovering ? Ui.SurfaceHover : Ui.Surface;
+        for (int layer = 2; layer >= 1; layer--)
+        {
+            using var shadow = new SolidBrush(Color.FromArgb((Ui.HeaderIsDark ? 30 : 13) / layer, 24, 40, 72));
+            RectangleF halo = RectangleF.Inflate(bounds, layer - 1, layer - 1);
+            halo.Offset(0f, layer * 1.1f);
+            VisualDrawing.FillRoundedRectangle(g, shadow, halo, 9 + layer - 1);
+        }
         using (var brush = new SolidBrush(fill)) VisualDrawing.FillRoundedRectangle(g, brush, bounds, 9);
-        using (var pen = new Pen(_selected ? Ui.Accent : Ui.Line, _selected ? 1.2f : 0.8f)) VisualDrawing.DrawRoundedRectangle(g, pen, bounds, 9);
+        using (var pen = new Pen(_selected ? Ui.Accent : Ui.Line, _selected ? 1.4f : 1f)) VisualDrawing.DrawRoundedRectangle(g, pen, bounds, 9);
         if (_selected)
         {
             using var marker = new SolidBrush(Ui.Accent);
             VisualDrawing.FillRoundedRectangle(g, marker, new RectangleF(bounds.X, bounds.Y + 14, 3, bounds.Height - 28), 2);
         }
         Color onlineColor = _online ? Ui.Success : Ui.Faint;
-        using (var dot = new SolidBrush(onlineColor)) g.FillEllipse(dot, Width - 23, 15, 6, 6);
-        int textWidth = Math.Max(36, Width - 48);
-        using var titleFont = Ui.Font(9.1f, FontStyle.Bold);
+        float dotY = bounds.Y + 15;
+        using (var halo = new SolidBrush(Color.FromArgb(_online ? 46 : 28, onlineColor))) g.FillEllipse(halo, Width - 27, dotY - 3, 12, 12);
+        using (var dot = new SolidBrush(onlineColor)) g.FillEllipse(dot, Width - 24, dotY, 6, 6);
+        int badgeWidth = 0;
+        if (_unread > 0)
+        {
+            string count = _unread > 99 ? "99+" : _unread.ToString();
+            using var badgeFont = Ui.Font(8f, FontStyle.Bold);
+            badgeWidth = Math.Max(20, TextRenderer.MeasureText(g, count, badgeFont, Size.Empty, TextFormatFlags.SingleLine | TextFormatFlags.NoPadding).Width + 12);
+            RectangleF badge = new(Width - 16 - badgeWidth, bounds.Y + 34, badgeWidth, 18);
+            using (var badgeFill = new SolidBrush(Ui.Accent)) VisualDrawing.FillRoundedRectangle(g, badgeFill, badge, 9);
+            TextRenderer.DrawText(g, count, badgeFont, Rectangle.Round(badge), Ui.PrimaryInk, TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.SingleLine | TextFormatFlags.NoPadding);
+        }
+        using var titleFont = Ui.Font(9.5f, FontStyle.Bold);
         using var previewFont = Ui.Font(8.2f);
-        TextRenderer.DrawText(g, _deviceName, titleFont, new Rectangle(14, 8, textWidth, 23), Ui.Ink, TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.SingleLine | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPadding);
-        string preview = _unread > 0 ? $"{_unread} 条未读 · {_preview}" : _preview;
-        TextRenderer.DrawText(g, preview, previewFont, new Rectangle(14, 34, Width - 26, 20), Ui.Muted, TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.SingleLine | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPadding);
+        int titleWidth = Math.Max(36, Width - 48);
+        int previewWidth = Math.Max(36, Width - 30 - (badgeWidth > 0 ? badgeWidth + 8 : 0));
+        TextRenderer.DrawText(g, _deviceName, titleFont, new Rectangle(14, 8, titleWidth, 23), _selected ? Ui.AccentDark : Ui.Ink, TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.SingleLine | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPadding);
+        TextRenderer.DrawText(g, _preview, previewFont, new Rectangle(14, 34, previewWidth, 20), Ui.Muted, TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.SingleLine | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPadding);
         if (Focused && ShowFocusCues)
         {
             using var focus = new Pen(Ui.Accent, 1) { DashStyle = DashStyle.Dot };
