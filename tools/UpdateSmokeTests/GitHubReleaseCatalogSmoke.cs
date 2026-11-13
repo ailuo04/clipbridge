@@ -85,8 +85,172 @@ internal static class GitHubReleaseCatalogSmoke
         return version;
     }
 
+
+    private const string WebPage1 = "https://github.com/ailuo04/clipbridge/releases";
+    private const string WebPage2 = "https://github.com/ailuo04/clipbridge/releases?page=2";
+
+    private static HttpResponseMessage HtmlResponse(string html, string? finalUrl = null)
+    {
+        var response = new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new StringContent(html, Encoding.UTF8, "text/html")
+        };
+        if (finalUrl != null) response.RequestMessage = new HttpRequestMessage(HttpMethod.Get, finalUrl);
+        return response;
+    }
+
+    // Match the release section, metadata and pagination returned by GitHub's public page.
+    private static string WebRelease(string version, bool prerelease = false, bool draft = false) => $$"""
+        <section id="release-v{{version}}" aria-labelledby="heading-{{version}}" data-release-anchor="release-v{{version}}">
+          <h2 class="sr-only" id="heading-{{version}}">ClipBridge {{version}}</h2>
+          <div class="Box"><div class="Box-body">
+            <span class="f1 text-bold"><a href="/ailuo04/clipbridge/releases/tag/v{{version}}" class="Link--primary Link">ClipBridge {{version}}</a></span>
+            {{(prerelease ? "<span class=\"Label Label--warning\">Pre-release</span>" : "")}}
+            {{(draft ? "<span class=\"Label Label--secondary\">Draft</span>" : "")}}
+            <relative-time class="no-wrap" datetime="2026-01-02T00:00:00Z">2 Jan</relative-time>
+            <div class="markdown-body tmp-my-3">
+              <a href="/ailuo04/clipbridge/releases/tag/v0.3.8">An older version mentioned in release notes</a>
+              <span class="Label">Pre-release</span>
+            </div>
+          </div></div>
+        </section>
+        """;
+
+    private static string WebPage(string releases, string? next = null) => $$"""
+        <!doctype html><html><body><section aria-label="Releases results">
+        <rails-partial data-partial-name="releasesIndexRoute.Results">
+          <div hidden id="release_page_title">Releases · ailuo04/clipbridge</div>
+          <div data-pjax data-hpc>{{releases}}</div>
+          <div class="paginate-container"><div role="navigation" aria-label="Pagination" class="pagination">
+            {{(next == null ? "<span class=\"next_page disabled\">Next</span>" : "<a class=\"next_page\" rel=\"next\" href=\"" + next + "\">Next</a>")}}
+          </div></div>
+        </rails-partial></section></body></html>
+        """;
+
+    private static async Task VerifyWebFallbackAsync()
+    {
+        foreach (HttpStatusCode limited in new[] { HttpStatusCode.Forbidden, HttpStatusCode.TooManyRequests })
+        {
+            var requests = new List<string>();
+            using JsonDocument signed = JsonDocument.Parse(Fixture("manifest-0.5.4.json"));
+            string badSignature = JsonSerializer.Serialize(new
+            {
+                payload = signed.RootElement.GetProperty("payload").GetString(),
+                signature = Convert.ToBase64String(new byte[384])
+            });
+            using var handler = new ScriptedHandler(request =>
+            {
+                string url = request.RequestUri!.AbsoluteUri;
+                requests.Add(url);
+                if (url == ApiPage1) return new HttpResponseMessage(limited);
+                if (url == WebPage1)
+                {
+                    Check(request.Headers.Accept.Any(value => value.MediaType == "text/html"), "fallback requests HTML from the public release page");
+                    return HtmlResponse(WebPage(WebRelease("0.5.6") + WebRelease("0.5.7") + WebRelease("0.5.5", draft: true) + WebRelease("0.5.4") + WebRelease("0.5.3") + WebRelease("0.5.2"), "/ailuo04/clipbridge/releases?page=2"));
+                }
+                if (url == WebPage2) return HtmlResponse(WebPage(WebRelease("0.5.4") + WebRelease("0.4.0", prerelease: true) + WebRelease("0.3.9") + WebRelease("0.3.10")));
+                if (url == RawRoot + "manifest-0.5.4.json") return new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent(Fixture("manifest-0.5.4.json")) };
+                if (url == RawRoot + "manifest-0.5.3.json") return new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent(Fixture("manifest-0.5.0.json")) };
+                if (url == RawRoot + "manifest-0.5.2.json") return new HttpResponseMessage(HttpStatusCode.NotFound);
+                if (url == RawRoot + "manifest-0.4.0.json") return new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent(Fixture("manifest-0.4.0.json")) };
+                if (url == RawRoot + "manifest-0.3.9.json") return new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent(Fixture("manifest-0.3.9.json")) };
+                if (url == RawRoot + "manifest-0.3.10.json") return new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent(badSignature) };
+                throw new Exception("Unexpected fallback request: " + url);
+            });
+            using var client = new HttpClient(handler);
+            using var catalog = new GitHubReleaseCatalog(client);
+            IReadOnlyList<GitHubRollbackCandidate> candidates = await catalog.LoadAsync(new Version(0, 5, 6), CancellationToken.None);
+            Check(candidates.Select(candidate => candidate.TagName).SequenceEqual(new[] { "v0.5.4", "v0.5.3", "v0.5.2", "v0.4.0", "v0.3.10", "v0.3.9" }), "HTTP " + (int)limited + " falls back to all public release pages with numeric sorting and deduplication");
+            Check(candidates[0].Update is { IsRollback: true, Version: "0.5.4" } && !candidates[0].IsPrerelease, "fallback uses signed manifests and ignores release-note links and badges");
+            Check(candidates[0].PublishedAt == new DateTimeOffset(2026, 1, 2, 0, 0, 0, TimeSpan.Zero), "fallback retains release publication dates");
+            Check(candidates[1].Update == null && candidates[2].Update == null && candidates[4].Update == null, "fallback cannot enable mismatched, missing or invalidly signed manifests");
+            Check(candidates[3].IsPrerelease && candidates[3].Update?.Version == "0.4.0" && candidates[5].Update?.Version == "0.3.9", "fallback retains prerelease marking and the oldest published version");
+            Check(requests.Count(url => url == WebPage2) == 1 && requests.Count(url => url == RawRoot + "manifest-0.5.4.json") == 1, "fallback paginates once and verifies duplicate releases only once");
+        }
+
+        using (var handler = new ScriptedHandler(request => request.RequestUri!.AbsoluteUri switch
+        {
+            ApiPage1 => JsonResponse(new[] { Release("0.5.4") }, $"<{ApiPage2}>; rel=\"next\""),
+            ApiPage2 => new HttpResponseMessage(HttpStatusCode.TooManyRequests),
+            WebPage1 => HtmlResponse(WebPage(WebRelease("0.3.9"))),
+            RawRoot + "manifest-0.3.9.json" => new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent(Fixture("manifest-0.3.9.json")) },
+            _ => throw new Exception("Unexpected partial-API request: " + request.RequestUri)
+        }))
+        using (var client = new HttpClient(handler))
+        using (var catalog = new GitHubReleaseCatalog(client))
+        {
+            var candidates = await catalog.LoadAsync(new Version(0, 5, 6), CancellationToken.None);
+            Check(candidates.Count == 1 && candidates[0].Update?.Version == "0.3.9", "rate limiting on later API pages restarts a complete public-page scan");
+        }
+
+        foreach (string next in new[]
+        {
+            "https://evil.example/ailuo04/clipbridge/releases?page=2",
+            "http://github.com/ailuo04/clipbridge/releases?page=2",
+            "https://github.com:444/ailuo04/clipbridge/releases?page=2",
+            "/other/repo/releases?page=2",
+            "/ailuo04/clipbridge/releases?page=2&amp;other=1",
+            "/ailuo04/clipbridge/releases?page=2#fragment",
+            "/ailuo04/clipbridge/releases?page=0",
+            "/ailuo04/clipbridge/releases"
+        })
+        {
+            int webRequests = 0;
+            using var handler = new ScriptedHandler(request =>
+            {
+                if (request.RequestUri!.AbsoluteUri == ApiPage1) return new HttpResponseMessage(HttpStatusCode.Forbidden);
+                webRequests++;
+                if (request.RequestUri.AbsoluteUri != WebPage1) throw new Exception("Unsafe pagination was requested");
+                return HtmlResponse(WebPage(WebRelease("0.5.4"), next));
+            });
+            using var client = new HttpClient(handler);
+            using var catalog = new GitHubReleaseCatalog(client);
+            bool rejected = false;
+            try { await catalog.LoadAsync(new Version(0, 5, 6), CancellationToken.None); }
+            catch (UpdateProtocolException) { rejected = true; }
+            Check(rejected && webRequests == 1, "fallback rejects unsafe or looping pagination before requesting it: " + next);
+        }
+
+        foreach (string failure in new[] { "unavailable", "malformed", "oversized", "redirected" })
+        {
+            using var handler = new ScriptedHandler(request =>
+            {
+                if (request.RequestUri!.AbsoluteUri == ApiPage1) return new HttpResponseMessage(HttpStatusCode.Forbidden);
+                if (request.RequestUri.AbsoluteUri != WebPage1) throw new Exception("Unexpected failed-fallback request");
+                return failure switch
+                {
+                    "unavailable" => new HttpResponseMessage(HttpStatusCode.ServiceUnavailable),
+                    "malformed" => HtmlResponse("<html><body>Sign in or try again</body></html>"),
+                    "oversized" => HtmlResponse(new string('x', 2 * 1024 * 1024 + 1)),
+                    _ => HtmlResponse(WebPage(WebRelease("0.5.4")), "https://evil.example/releases")
+                };
+            });
+            using var client = new HttpClient(handler);
+            using var catalog = new GitHubReleaseCatalog(client);
+            bool rejected = false;
+            try { await catalog.LoadAsync(new Version(0, 5, 6), CancellationToken.None); }
+            catch (UpdateProtocolException) { rejected = true; }
+            Check(rejected, "fallback fails closed for " + failure + " responses");
+        }
+
+        using (var handler = new ScriptedHandler(request =>
+        {
+            if (request.RequestUri!.AbsoluteUri != ApiPage1) throw new Exception("Unexpected fallback for a non-rate-limit failure");
+            return new HttpResponseMessage(HttpStatusCode.InternalServerError);
+        }))
+        using (var client = new HttpClient(handler))
+        using (var catalog = new GitHubReleaseCatalog(client))
+        {
+            bool rejected = false;
+            try { await catalog.LoadAsync(new Version(0, 5, 6), CancellationToken.None); }
+            catch (UpdateProtocolException) { rejected = true; }
+            Check(rejected, "non-rate-limit API errors still stop loading");
+        }
+    }
+
     public static async Task VerifyAsync()
     {
+        await VerifyWebFallbackAsync();
         string manifest54 = Fixture("manifest-0.5.4.json");
         string manifest50 = Fixture("manifest-0.5.0.json");
         string manifest40 = Fixture("manifest-0.4.0.json");
@@ -136,7 +300,7 @@ internal static class GitHubReleaseCatalogSmoke
         bool rateLimited = false;
         try { await rateLimitCatalog.LoadAsync(new Version(0, 5, 6), CancellationToken.None); }
         catch (UpdateProtocolException) { rateLimited = true; }
-        Check(rateLimited, "GitHub API failure stops catalog loading instead of returning unverified candidates");
+        Check(rateLimited, "API and public-page failures stop loading instead of returning unverified candidates");
 
         using var hostileLinkHandler = new ScriptedHandler(request => JsonResponse(Array.Empty<object>(), "<https://example.com/releases?page=2>; rel=\"next\""));
         using var hostileLinkClient = new HttpClient(hostileLinkHandler);
@@ -211,5 +375,8 @@ internal static class GitHubReleaseCatalogSmoke
         using var crossHostManifestCatalog = new GitHubReleaseCatalog(crossHostManifestClient);
         IReadOnlyList<GitHubRollbackCandidate> crossHostManifest = await crossHostManifestCatalog.LoadAsync(new Version(0, 5, 6), CancellationToken.None);
         Check(crossHostManifest.Count == 1 && crossHostManifest[0].Update == null, "manifest redirect to another host is rejected");
+
+        var assemblyVersionCandidates = await catalog.LoadAsync(new Version(0, 5, 4, 0), CancellationToken.None);
+        Check(assemblyVersionCandidates.All(candidate => candidate.TagName != "v0.5.4"), "three-part release matching the four-part assembly version is not a rollback target");
     }
 }

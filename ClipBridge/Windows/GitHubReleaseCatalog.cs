@@ -7,6 +7,7 @@ using System.Net;
 using System.Net.Http;
 using System.Text;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -22,6 +23,7 @@ internal sealed record GitHubRollbackCandidate(
 internal sealed class GitHubReleaseCatalog : IDisposable
 {
     private const string ApiRoot = "https://api.github.com/repos/ailuo04/clipbridge/releases?per_page=100";
+    private const string WebRoot = "https://github.com/ailuo04/clipbridge/releases";
     private const string RawRoot = "https://raw.githubusercontent.com/ailuo04/clipbridge/master/";
     private const int MaxReleasePageBytes = 2 * 1024 * 1024;
     private const int MaxManifestBytes = 1024 * 1024;
@@ -51,20 +53,41 @@ internal sealed class GitHubReleaseCatalog : IDisposable
 
     internal async Task<IReadOnlyList<GitHubRollbackCandidate>> LoadAsync(Version currentVersion, CancellationToken cancellationToken)
     {
+        currentVersion = new Version(currentVersion.Major, currentVersion.Minor, Math.Max(0, currentVersion.Build));
         var releases = new List<ReleaseRecord>();
         var requested = new HashSet<string>(StringComparer.Ordinal);
         string next = ApiRoot;
+        bool useWeb = false;
         while (true)
         {
             if (!requested.Add(next))
             {
                 throw new UpdateProtocolException("GitHub 发布列表分页循环");
             }
-            using HttpResponseMessage response = await SendAsync(next, "GitHub 发布列表", cancellationToken).ConfigureAwait(false);
-            string json = await ReadLimitedStringAsync(response.Content, MaxReleasePageBytes, cancellationToken).ConfigureAwait(false);
-            ReleaseRecord[] page = ParseReleases(json);
+            using HttpResponseMessage response = await SendAsync(next, useWeb ? "GitHub 发布网页" : "GitHub 发布列表", cancellationToken, allowApiRateLimit: !useWeb).ConfigureAwait(false);
+            if (!useWeb && response.StatusCode is HttpStatusCode.Forbidden or HttpStatusCode.TooManyRequests)
+            {
+                // A later API page can also be rate limited. Restart discovery rather than
+                // merging a partial API result with a potentially different public-page snapshot.
+                releases.Clear();
+                requested.Clear();
+                useWeb = true;
+                next = WebRoot;
+                continue;
+            }
+            string content = await ReadLimitedStringAsync(response.Content, MaxReleasePageBytes, cancellationToken).ConfigureAwait(false);
+            ReleaseRecord[] page;
+            string? nextLink;
+            if (useWeb)
+            {
+                (page, nextLink) = ParseWebPage(content);
+            }
+            else
+            {
+                page = ParseReleases(content);
+                nextLink = GetNextLink(response);
+            }
             releases.AddRange(page);
-            string? nextLink = GetNextLink(response);
             if (nextLink == null)
             {
                 break;
@@ -107,7 +130,7 @@ internal sealed class GitHubReleaseCatalog : IDisposable
             .ToArray();
     }
 
-    private async Task<HttpResponseMessage> SendAsync(string url, string description, CancellationToken cancellationToken, bool allowNotFound = false)
+    private async Task<HttpResponseMessage> SendAsync(string url, string description, CancellationToken cancellationToken, bool allowNotFound = false, bool allowApiRateLimit = false)
     {
         if (!IsTrustedRequestUrl(url))
         {
@@ -115,7 +138,7 @@ internal sealed class GitHubReleaseCatalog : IDisposable
         }
         using var request = new HttpRequestMessage(HttpMethod.Get, url);
         request.Headers.UserAgent.ParseAdd("ClipBridge-Windows/0.2");
-        request.Headers.Accept.ParseAdd("application/vnd.github+json");
+        request.Headers.Accept.ParseAdd(IsTrustedWebUrl(url) ? "text/html" : "application/vnd.github+json");
         HttpResponseMessage response;
         try
         {
@@ -130,7 +153,8 @@ internal sealed class GitHubReleaseCatalog : IDisposable
             response.Dispose();
             throw new UpdateProtocolException(description + "响应地址发生重定向");
         }
-        if (response.StatusCode == HttpStatusCode.OK || (allowNotFound && response.StatusCode == HttpStatusCode.NotFound))
+        if (response.StatusCode == HttpStatusCode.OK || (allowNotFound && response.StatusCode == HttpStatusCode.NotFound) ||
+            (allowApiRateLimit && IsTrustedApiUrl(url) && response.StatusCode is HttpStatusCode.Forbidden or HttpStatusCode.TooManyRequests))
         {
             return response;
         }
@@ -215,7 +239,94 @@ internal sealed class GitHubReleaseCatalog : IDisposable
         return null;
     }
 
-    private static bool IsTrustedRequestUrl(string url) => IsTrustedApiUrl(url) || IsTrustedManifestUrl(url);
+    private static (ReleaseRecord[] Releases, string? Next) ParseWebPage(string html)
+    {
+        try
+        {
+            // Match GitHub's published-release sections, never links or badges in release notes.
+            MatchCollection sections = HtmlMatches(html, """<section\b(?=[^>]*\bid\s*=\s*["']release-)[^>]*>.*?</section\s*>""");
+            if (sections.Count == 0) throw new UpdateProtocolException("GitHub 发布网页格式无效");
+            var releases = new List<ReleaseRecord>();
+            foreach (Match section in sections)
+            {
+                string entry = section.Value;
+                string? id = HtmlAttribute(entry[..(entry.IndexOf('>') + 1)], "id");
+                if (id == null || !id.StartsWith("release-", StringComparison.Ordinal)) continue;
+                string tag = id["release-".Length..];
+                if (!TryParseReleaseVersion(tag, out _)) continue;
+
+                Match? notes = HtmlMatches(entry, @"<div\b[^>]*>").Cast<Match>()
+                    .FirstOrDefault(match => HasHtmlClass(match.Value, "markdown-body"));
+                string metadata = notes == null ? entry : entry[..notes.Index];
+                string tagPath = "/ailuo04/clipbridge/releases/tag/" + tag;
+                if (!HtmlMatches(metadata, @"<a\b[^>]*>").Cast<Match>()
+                    .Any(match => HtmlAttribute(match.Value, "href") is string href && (href == tagPath || href == "https://github.com" + tagPath)))
+                {
+                    throw new UpdateProtocolException("GitHub 发布网页条目格式无效");
+                }
+                string[] labels = HtmlMatches(metadata, @"<span\b(?<attributes>[^>]*)>(?<label>[^<]*)</span\s*>")
+                    .Cast<Match>().Where(match => HasHtmlClass(match.Groups["attributes"].Value, "Label"))
+                    .Select(match => WebUtility.HtmlDecode(match.Groups["label"].Value).Trim()).ToArray();
+                DateTimeOffset? publishedAt = null;
+                Match? time = HtmlMatches(metadata, @"<relative-time\b[^>]*>").Cast<Match>().FirstOrDefault();
+                if (time != null && DateTimeOffset.TryParse(HtmlAttribute(time.Value, "datetime"), CultureInfo.InvariantCulture,
+                    DateTimeStyles.RoundtripKind, out DateTimeOffset parsed)) publishedAt = parsed;
+                releases.Add(new ReleaseRecord(tag, labels.Contains("Draft", StringComparer.OrdinalIgnoreCase),
+                    labels.Contains("Pre-release", StringComparer.OrdinalIgnoreCase), publishedAt));
+            }
+            return (releases.ToArray(), GetNextWebLink(html));
+        }
+        catch (RegexMatchTimeoutException error)
+        {
+            throw new UpdateProtocolException("GitHub 发布网页解析超时", error);
+        }
+    }
+
+    private static string? GetNextWebLink(string html)
+    {
+        foreach (Match navigation in HtmlMatches(html, """<div\b(?=[^>]*\bclass\s*=\s*["'][^"']*\bpagination\b)[^>]*>.*?</div\s*>"""))
+        {
+            string opening = navigation.Value[..(navigation.Value.IndexOf('>') + 1)];
+            if (!HasHtmlClass(opening, "pagination")) continue;
+            foreach (Match link in HtmlMatches(navigation.Value, @"<a\b[^>]*>"))
+            {
+                string? rel = HtmlAttribute(link.Value, "rel");
+                if (rel == null || !rel.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries).Contains("next", StringComparer.OrdinalIgnoreCase)) continue;
+                string? href = HtmlAttribute(link.Value, "href");
+                if (href == null || !Uri.TryCreate(new Uri(WebRoot), href, out Uri? next) || !IsTrustedWebUrl(next.AbsoluteUri))
+                    throw new UpdateProtocolException("GitHub 发布网页分页地址不受信任");
+                return next.AbsoluteUri;
+            }
+        }
+        return null;
+    }
+
+    private static MatchCollection HtmlMatches(string html, string pattern) => Regex.Matches(html, pattern,
+        RegexOptions.IgnoreCase | RegexOptions.Singleline | RegexOptions.CultureInvariant, TimeSpan.FromSeconds(1));
+
+    private static string? HtmlAttribute(string tag, string name)
+    {
+        Match? match = HtmlMatches(tag, @"(?:^|\s)" + Regex.Escape(name) + """\s*=\s*(?:"([^"]*)"|'([^']*)')""")
+            .Cast<Match>().FirstOrDefault();
+        return match == null ? null : WebUtility.HtmlDecode(match.Groups[1].Success ? match.Groups[1].Value : match.Groups[2].Value);
+    }
+
+    private static bool HasHtmlClass(string tag, string name) => HtmlAttribute(tag, "class") is string classes &&
+        classes.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries).Contains(name, StringComparer.Ordinal);
+
+    private static bool IsTrustedWebUrl(string url)
+    {
+        if (!Uri.TryCreate(url, UriKind.Absolute, out Uri? uri) || uri.Scheme != Uri.UriSchemeHttps || uri.Port != 443 ||
+            !string.IsNullOrEmpty(uri.UserInfo) || !string.Equals(uri.Host, "github.com", StringComparison.OrdinalIgnoreCase) ||
+            uri.AbsolutePath != "/ailuo04/clipbridge/releases" || !string.IsNullOrEmpty(uri.Fragment)) return false;
+        if (uri.Query.Length == 0) return true;
+        const string prefix = "?page=";
+        return uri.Query.StartsWith(prefix, StringComparison.Ordinal) &&
+            int.TryParse(uri.Query[prefix.Length..], NumberStyles.None, CultureInfo.InvariantCulture, out int page) && page >= 1 &&
+            uri.Query[prefix.Length..] == page.ToString(CultureInfo.InvariantCulture);
+    }
+
+    private static bool IsTrustedRequestUrl(string url) => IsTrustedApiUrl(url) || IsTrustedWebUrl(url) || IsTrustedManifestUrl(url);
 
     private static bool IsTrustedApiUrl(string url)
     {

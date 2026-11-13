@@ -43,6 +43,7 @@ internal static class UpdateExperienceSmoke
         Check(UpdateProtocol.ParseAndVerify(envelope) == null, "automatic update parsing still rejects an older signed manifest");
         ExpectProtocolError(() => UpdateProtocol.ParseAndVerifyRollback(envelope, "0.5.1", new Version(0, 5, 6)), "release tag mismatch is rejected");
         ExpectProtocolError(() => UpdateProtocol.ParseAndVerifyRollback(envelope, "0.5.0", new Version(0, 5, 0)), "current version is not accepted as rollback target");
+        ExpectProtocolError(() => UpdateProtocol.ParseAndVerifyRollback(envelope, "0.5.0", new Version(0, 5, 0, 0)), "same version with an assembly revision is not accepted as rollback target");
         ExpectProtocolError(() => UpdateProtocol.ParseAndVerifyRollback(envelope, "0.5.0", new Version(0, 4, 9)), "newer target is not accepted as rollback");
         using JsonDocument json = JsonDocument.Parse(envelope);
         string signature = json.RootElement.GetProperty("signature").GetString()!;

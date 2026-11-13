@@ -53,6 +53,7 @@ internal static class UpdateProtocol
 		{
 			throw new UpdateProtocolException("回退版本号格式无效");
 		}
+		currentVersion = new Version(currentVersion.Major, currentVersion.Minor, Math.Max(0, currentVersion.Build));
 		return ParseAndVerifyCore(envelopeJson, currentVersion, requireNewer: false, requestedVersion.ToString(3))
 			?? throw new UpdateProtocolException("更新清单缺少 Windows 安装包");
 	}
